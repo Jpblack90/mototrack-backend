@@ -1,0 +1,16 @@
+import 'dotenv/config';
+import app from './src/app.js';
+import { testConnection } from './src/config/database.js';
+
+const PORT = process.env.PORT ?? 4000;
+
+async function bootstrap() {
+  await testConnection(); // Falla y termina el proceso si la BD no responde
+
+  app.listen(PORT, () => {
+    console.log(`🚀  MotoTrack AI backend corriendo en http://localhost:${PORT}`);
+    console.log(`📋  Health check: http://localhost:${PORT}/api/health`);
+  });
+}
+
+bootstrap();
