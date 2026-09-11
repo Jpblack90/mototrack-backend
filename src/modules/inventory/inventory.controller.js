@@ -39,10 +39,16 @@ export async function getItem(req, res, next) {
 
 /**
  * POST /api/inventory
+ * RETROFIT Fase 6: si force:true viene en el body, verifica que sea Admin
+ * antes de tocar la BD. Pasa req.user.id al service para auditoría.
  */
 export async function createItem(req, res, next) {
   try {
-    const newItem = await inventoryService.create(req.body);
+    // Guardia de rol para force:true — sin tocar la BD si no pasa
+    if (req.body.force === true && req.user?.role !== 'admin') {
+      return fail(res, 'Solo un Administrador puede forzar un margen negativo.', 403);
+    }
+    const newItem = await inventoryService.create(req.body, req.user?.id ?? null);
     ok(res, newItem, 201);
   } catch (err) {
     if (err.code === 'NEGATIVE_MARGIN') return fail(res, err.message, 422);
@@ -54,10 +60,15 @@ export async function createItem(req, res, next) {
 
 /**
  * PUT /api/inventory/:id
+ * RETROFIT Fase 6: misma guardia de force:true que createItem.
  */
 export async function updateItem(req, res, next) {
   try {
-    const updated = await inventoryService.update(req.params.id, req.body);
+    // Guardia de rol para force:true — sin tocar la BD si no pasa
+    if (req.body.force === true && req.user?.role !== 'admin') {
+      return fail(res, 'Solo un Administrador puede forzar un margen negativo.', 403);
+    }
+    const updated = await inventoryService.update(req.params.id, req.body, req.user?.id ?? null);
     if (!updated) return fail(res, 'Producto no encontrado.', 404);
     ok(res, updated);
   } catch (err) {

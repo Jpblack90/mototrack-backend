@@ -43,6 +43,16 @@ Cada entrada indica el integrante responsable entre paréntesis.
 - Endpoint `GET /api/invoicing/pending` para listar comprobantes en estado contingency (Jean Pool)
 - RF-30: `GET /api/invoicing/:id/status` devuelve `{ id, estado, is_contingency }` (Jean Pool)
 - `GET /api/invoicing/:id/ticket` retorna JSON estructurado listo para que el frontend arme el ticket de impresión (Jean Pool)
+- Esquema SQL de la tabla `users` y columnas `mechanic_id` / `force_approved_by` en `scripts/schema_auth.sql` (Jean Pool)
+- Script de seed idempotente del primer Administrador: `npm run seed:admin` (Jean Pool)
+- Middlewares `authenticate.js` (JWT Bearer) y `authorize(...roles)` (RBAC) en `src/shared/middlewares/` (Jean Pool)
+- Módulo `src/modules/auth/`: `POST /api/auth/login` (público) y `GET /api/auth/me` (autenticado) (Jean Pool)
+- Módulo `src/modules/users/`: CRUD admin-only de cuentas de usuario (Jean Pool)
+- Login retorna el mismo mensaje de error si el email no existe o la contraseña es incorrecta (seguridad anti-enumeración) (Jean Pool)
+- Retrofit `workorders.service.js`: `assignMechanic` valida `mechanic_id` en tabla `users` con `role='mecanico'`; `getAll/getById/getHistoryByPlaca` traen el nombre real del mecánico vía JOIN (Jean Pool)
+- Retrofit `inventory.controller.js`: bloquea `force:true` con 403 si el rol no es `admin` antes de tocar la BD (Jean Pool)
+- Retrofit `inventory.service.js`: `create/update` guardan `force_approved_by = userId` al aprobar márgenes negativos (Jean Pool)
+- Retrofit de los 4 archivos `*.routes.js`: todas las rutas protegidas con `authenticate` + `authorize` por rol (Jean Pool)
 
 ## [0.1.0] - Fase 1: Setup y Base de Datos
 ### Added

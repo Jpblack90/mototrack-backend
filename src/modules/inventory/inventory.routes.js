@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { authenticate } from '../../shared/middlewares/authenticate.js';
+import { authorize }    from '../../shared/middlewares/authorize.js';
 import {
   getAllItems,
   getItem,
@@ -9,16 +11,13 @@ import {
 
 const router = Router();
 
-// GET    /api/inventory          → listar productos activos (soporta ?search=)
-// GET    /api/inventory/:id      → obtener un producto por id
-// POST   /api/inventory          → crear producto (valida margen; admite force: true)
-// PUT    /api/inventory/:id      → actualizar producto (valida margen; admite force: true)
-// DELETE /api/inventory/:id      → soft-delete (is_active = false)
+// RETROFIT Fase 6: middlewares de autenticación y autorización por rol
+// Handlers existentes no fueron modificados.
 
-router.get('/',     getAllItems);
-router.get('/:id',  getItem);
-router.post('/',    createItem);
-router.put('/:id',  updateItem);
-router.delete('/:id', deleteItem);
+router.get('/',       authenticate,                              getAllItems);
+router.get('/:id',    authenticate,                              getItem);
+router.post('/',      authenticate, authorize('admin','cajero'), createItem);
+router.put('/:id',    authenticate, authorize('admin','cajero'), updateItem);
+router.delete('/:id', authenticate, authorize('admin'),          deleteItem);
 
 export default router;

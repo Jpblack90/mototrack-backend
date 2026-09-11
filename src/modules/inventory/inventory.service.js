@@ -120,10 +120,14 @@ export async function getById(id) {
  * Crea un nuevo producto.
  * Valida campos y regla de margen (con soporte para force).
  *
- * @param {object} data
+ * RETROFIT Fase 6: acepta userId para registrar quién aprobó un margen
+ * negativo forzado (force_approved_by). No cambia la lógica de validación.
+ *
+ * @param {object}      data
+ * @param {number|null} userId  ID del usuario autenticado (req.user.id)
  * @throws {AppError}
  */
-export async function create(data) {
+export async function create(data, userId = null) {
   validateProductData(data); // lanza si hay error
 
   const {
@@ -137,13 +141,17 @@ export async function create(data) {
     min_stock = 5,
     ai_confidence,
     registration_method = 'manual',
+    force,
   } = data;
+
+  // force_approved_by solo se guarda si el admin usó force:true
+  const forceApprovedBy = force === true ? (userId ?? null) : null;
 
   const { rows } = await pool.query(
     `INSERT INTO products
        (sku, name, brand, compatible_models, cost_price, sale_price,
-        stock, min_stock, ai_confidence, registration_method)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        stock, min_stock, ai_confidence, registration_method, force_approved_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
     [
       sku ?? null,
@@ -156,6 +164,7 @@ export async function create(data) {
       Number(min_stock),
       ai_confidence != null ? Number(ai_confidence) : null,
       registration_method,
+      forceApprovedBy,
     ]
   );
 
@@ -167,11 +176,15 @@ export async function create(data) {
  * Actualiza un producto activo por id.
  * Aplica la misma validación de margen que create().
  *
+ * RETROFIT Fase 6: acepta userId para registrar quién aprobó un margen
+ * negativo forzado (force_approved_by). No cambia la lógica de validación.
+ *
  * @param {number|string} id
  * @param {object}        data
+ * @param {number|null}   userId  ID del usuario autenticado (req.user.id)
  * @returns {object|null}  null si no existe o está inactivo
  */
-export async function update(id, data) {
+export async function update(id, data, userId = null) {
   // Verificar que el producto existe y está activo
   const existing = await getById(id);
   if (!existing) return null;
@@ -197,7 +210,11 @@ export async function update(id, data) {
     min_stock,
     ai_confidence,
     registration_method,
+    force,
   } = data;
+
+  // force_approved_by solo se actualiza si el admin usó force:true
+  const forceApprovedBy = force === true ? (userId ?? null) : null;
 
   const { rows } = await pool.query(
     `UPDATE products
@@ -212,8 +229,9 @@ export async function update(id, data) {
        min_stock           = COALESCE($8,  min_stock),
        ai_confidence       = COALESCE($9,  ai_confidence),
        registration_method = COALESCE($10, registration_method),
+       force_approved_by   = COALESCE($11, force_approved_by),
        updated_at          = NOW()
-     WHERE id = $11 AND is_active = true
+     WHERE id = $12 AND is_active = true
      RETURNING *`,
     [
       sku ?? null,
@@ -226,6 +244,7 @@ export async function update(id, data) {
       min_stock != null ? Number(min_stock) : null,
       ai_confidence != null ? Number(ai_confidence) : null,
       registration_method ?? null,
+      forceApprovedBy,
       id,
     ]
   );

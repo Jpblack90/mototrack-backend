@@ -156,20 +156,27 @@ export async function getAll({ status } = {}) {
   let query;
   let params;
 
+  // RETROFIT Fase 6: LEFT JOIN a users para traer el nombre real del mecánico
+  // La columna work_orders.mechanic_name queda en la BD pero se reemplaza en la
+  // respuesta por el nombre del usuario vinculado (u.name AS mechanic_name).
   if (status && status.trim() !== '') {
     query = `
-      SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone
+      SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone,
+             u.name AS mechanic_name
       FROM   work_orders wo
-      JOIN   vehicles    v  ON v.id = wo.vehicle_id
+      JOIN   vehicles    v  ON v.id  = wo.vehicle_id
+      LEFT JOIN users    u  ON u.id  = wo.mechanic_id
       WHERE  wo.status = $1
       ORDER  BY wo.id ASC
     `;
     params = [status.trim()];
   } else {
     query = `
-      SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone
+      SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone,
+             u.name AS mechanic_name
       FROM   work_orders wo
-      JOIN   vehicles    v  ON v.id = wo.vehicle_id
+      JOIN   vehicles    v  ON v.id  = wo.vehicle_id
+      LEFT JOIN users    u  ON u.id  = wo.mechanic_id
       ORDER  BY wo.id ASC
     `;
     params = [];
@@ -186,9 +193,12 @@ export async function getAll({ status } = {}) {
  */
 export async function getById(id) {
   const { rows } = await pool.query(
-    `SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone
+    // RETROFIT Fase 6: LEFT JOIN a users para nombre real del mecánico
+    `SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone,
+            u.name AS mechanic_name
      FROM   work_orders wo
      JOIN   vehicles    v  ON v.id = wo.vehicle_id
+     LEFT JOIN users    u  ON u.id = wo.mechanic_id
      WHERE  wo.id = $1`,
     [id]
   );
@@ -202,9 +212,12 @@ export async function getById(id) {
  */
 export async function getHistoryByPlaca(placa) {
   const { rows } = await pool.query(
-    `SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone
+    // RETROFIT Fase 6: LEFT JOIN a users para nombre real del mecánico
+    `SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone,
+            u.name AS mechanic_name
      FROM   work_orders wo
      JOIN   vehicles    v  ON v.id = wo.vehicle_id
+     LEFT JOIN users    u  ON u.id = wo.mechanic_id
      WHERE  v.placa = $1
      ORDER  BY wo.created_at DESC`,
     [placa.trim().toUpperCase()]
@@ -213,18 +226,41 @@ export async function getHistoryByPlaca(placa) {
 }
 
 /**
- * Asigna un mecánico a una OT.
- * @param {number|string} id
- * @param {string}        mechanic_name
- * @returns {object|null}
+ * RETROFIT Fase 6: asigna un mecánico real a una OT.
+ * La firma cambió de mechanic_name (texto libre) a mechanic_id (FK a users).
+ * La columna work_orders.mechanic_name sigue en la BD pero ya no se actualiza aquí.
+ *
+ * @param {number|string} id           ID de la OT
+ * @param {number|string} mechanic_id  ID del usuario con role='mecanico'
  */
-export async function assignMechanic(id, mechanic_name) {
+export async function assignMechanic(id, mechanic_id) {
+  // Validar que el usuario existe, tiene role='mecanico' y está activo
+  const { rows: userRows } = await pool.query(
+    `SELECT id, name, role, is_active FROM users WHERE id = $1`,
+    [mechanic_id]
+  );
+
+  if (!userRows[0] || !userRows[0].is_active) {
+    throw new AppError(
+      `No existe un mecánico activo con id ${mechanic_id}.`,
+      'INVALID_MECHANIC',
+      422
+    );
+  }
+  if (userRows[0].role !== 'mecanico') {
+    throw new AppError(
+      `El usuario #${mechanic_id} tiene rol '${userRows[0].role}', se requiere 'mecanico'.`,
+      'INVALID_MECHANIC',
+      422
+    );
+  }
+
   const { rows } = await pool.query(
     `UPDATE work_orders
-     SET mechanic_name = $1, updated_at = NOW()
+     SET mechanic_id = $1, updated_at = NOW()
      WHERE id = $2
      RETURNING *`,
-    [mechanic_name, id]
+    [mechanic_id, id]
   );
   return rows[0] ?? null;
 }

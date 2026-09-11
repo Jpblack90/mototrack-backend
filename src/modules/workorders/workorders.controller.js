@@ -19,6 +19,7 @@ function httpStatusFromCode(code) {
     INVALID_TRANSITION:   422,
     MISSING_FIELD:        422,
     INVALID_FIELD:        422,
+    INVALID_MECHANIC:     422,  // RETROFIT Fase 6
   };
   return map[code] ?? 500;
 }
@@ -79,18 +80,20 @@ export async function createOrder(req, res, next) {
 
 /**
  * PATCH /api/workorders/:id/assign
- * Body: { "mechanic_name": "Carlos Rios" }
+ * RETROFIT Fase 6: Body cambia de { "mechanic_name" } a { "mechanic_id" }
+ * mechanic_id debe ser el id de un usuario con role='mecanico' activo.
  */
 export async function assignMechanic(req, res, next) {
   try {
-    const { mechanic_name } = req.body;
-    if (!mechanic_name || String(mechanic_name).trim() === '') {
-      return fail(res, '"mechanic_name" es obligatorio en el body.', 422);
+    const { mechanic_id } = req.body;
+    if (!mechanic_id) {
+      return fail(res, '"mechanic_id" es obligatorio en el body.', 422);
     }
-    const updated = await svc.assignMechanic(req.params.id, mechanic_name.trim());
+    const updated = await svc.assignMechanic(req.params.id, mechanic_id);
     if (!updated) return fail(res, `Orden de trabajo #${req.params.id} no encontrada.`, 404);
     ok(res, updated);
   } catch (err) {
+    if (err.code) return fail(res, err.message, httpStatusFromCode(err.code));
     next(err);
   }
 }
