@@ -33,6 +33,16 @@ Cada entrada indica el integrante responsable entre paréntesis.
 - Anulación de ventas (`PATCH /:id/void`): restaura stock de todos los ítems incluyendo componentes de kits (Jean Pool)
 - Endpoints `GET /api/sales/kits` y `POST /api/sales/kits` para gestión de kits de productos (Jean Pool)
 - Filtrado de ventas por estado: `GET /api/sales?status=` (Jean Pool)
+- Esquema SQL de la tabla `invoices` en `scripts/schema_invoicing.sql` con UNIQUE en `sale_id`, correlativo `numero` SERIAL, campo `is_contingency` y `cdr_response` JSONB (Jean Pool)
+- Módulo de Facturación Electrónica (`src/modules/invoicing/`): emisión de boletas y facturas con integración PSE simulada (Jean Pool)
+- Simulador PSE en `invoicing.pseClient.js`: punto de integración documentado para reemplazar por SDK Nubefact real (Jean Pool)
+- Generación de XML simplificado en `buildSimplifiedXml` con datos de venta, ítems, subtotal, IGV y total (Jean Pool)
+- RF-29: idempotencia de comprobantes — facturar la misma venta dos veces retorna el invoice existente con `alreadyExists: true` (Jean Pool)
+- RF-28: modo contingencia — si el PSE no está disponible el comprobante queda en estado `contingency` y la operación retorna éxito igual (Jean Pool)
+- Endpoint `PATCH /api/invoicing/:id/retry` para reintentar comprobantes en contingencia (Jean Pool)
+- Endpoint `GET /api/invoicing/pending` para listar comprobantes en estado contingency (Jean Pool)
+- RF-30: `GET /api/invoicing/:id/status` devuelve `{ id, estado, is_contingency }` (Jean Pool)
+- `GET /api/invoicing/:id/ticket` retorna JSON estructurado listo para que el frontend arme el ticket de impresión (Jean Pool)
 
 ## [0.1.0] - Fase 1: Setup y Base de Datos
 ### Added

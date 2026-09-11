@@ -1,14 +1,25 @@
 -- =============================================================================
--- MotoTrack AI — Script de inicialización de base de datos
+-- MotoTrack AI — Script de inicialización (PASO 1 de 5)
 -- =============================================================================
--- ⚠️  INSTRUCCIONES:
---   1. Conéctate a pgAdmin 4 con el usuario "postgres" (superusuario).
---   2. Abre el Query Tool (clic derecho sobre el servidor → Query Tool).
---   3. Ejecuta TODO este script UNA SOLA VEZ antes de levantar el backend.
---   4. Este script NO se ejecuta automáticamente desde Node.js.
+-- ⚠️  INSTRUCCIONES PARA INSTALACIÓN DESDE CERO:
+--
+--   Ejecutar los scripts EN ESTE ORDEN desde pgAdmin 4:
+--
+--   PASO 1 → init-db.sql          (este archivo) — crea usuario y BD
+--              Conectado a: servidor postgres, usuario postgres
+--
+--   PASO 2 → schema.sql           — tabla products (Inventario)
+--   PASO 3 → schema_workorders.sql — tablas vehicles, work_orders, notifications
+--   PASO 4 → schema_sales.sql     — tablas kits, kit_items, sales, sale_items
+--   PASO 5 → schema_invoicing.sql  — tabla invoices (Facturación)
+--              Conectado a: mototrack_db para los pasos 2-5
+--
+--   Ningún script se ejecuta automáticamente desde Node.js.
 -- =============================================================================
 
--- 1. Crear usuario de aplicación
+-- ── PASO 1A: Ejecutar conectado al servidor (usuario postgres) ────────────────
+
+-- Crear usuario de la aplicación (si no existe)
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'mototrack_user') THEN
@@ -17,8 +28,8 @@ BEGIN
 END
 $$;
 
--- 2. Crear base de datos (debe ejecutarse fuera de una transacción)
--- Si pgAdmin lanza error porque la BD ya existe, puedes ignorarlo o comentar esta línea.
+-- Crear la base de datos
+-- Si pgAdmin lanza error porque ya existe, ignóralo y continúa.
 CREATE DATABASE mototrack_db
   OWNER      mototrack_user
   ENCODING   'UTF8'
@@ -26,75 +37,20 @@ CREATE DATABASE mototrack_db
   LC_CTYPE   'es_ES.UTF-8'
   TEMPLATE   template0;
 
--- =============================================================================
--- Conectar a mototrack_db antes de ejecutar el resto
--- En pgAdmin: cambia la conexión a la BD "mototrack_db" y re-ejecuta desde aquí
--- =============================================================================
+-- ── PASO 1B: Reconectar a mototrack_db y ejecutar el resto ───────────────────
+-- En pgAdmin: clic derecho sobre mototrack_db → Query Tool
+-- Luego ejecuta las líneas siguientes:
 
--- 3. Privilegios generales
+-- Privilegios generales
 GRANT ALL PRIVILEGES ON DATABASE mototrack_db TO mototrack_user;
 GRANT ALL ON SCHEMA public TO mototrack_user;
 
--- 4. Tabla: inventory
-CREATE TABLE IF NOT EXISTS inventory (
-  id          SERIAL PRIMARY KEY,
-  name        VARCHAR(120)   NOT NULL,
-  description TEXT,
-  quantity    INTEGER        NOT NULL DEFAULT 0,
-  unit_price  NUMERIC(10, 2) NOT NULL DEFAULT 0,
-  category    VARCHAR(80),
-  created_at  TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
-  updated_at  TIMESTAMPTZ    NOT NULL DEFAULT NOW()
-);
-
--- 5. Tabla: work_orders
-CREATE TABLE IF NOT EXISTS work_orders (
-  id               SERIAL PRIMARY KEY,
-  customer_name    VARCHAR(120)  NOT NULL,
-  motorcycle_plate VARCHAR(20),
-  description      TEXT,
-  status           VARCHAR(30)   NOT NULL DEFAULT 'pending',
-    -- valores posibles: pending | in_progress | completed | cancelled
-  assigned_to      VARCHAR(80),
-  created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-  updated_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW()
-);
-
--- 6. Tabla: sales
-CREATE TABLE IF NOT EXISTS sales (
-  id              SERIAL PRIMARY KEY,
-  customer_name   VARCHAR(120),
-  total_amount    NUMERIC(12, 2) NOT NULL DEFAULT 0,
-  payment_method  VARCHAR(30),
-    -- valores posibles: cash | card | transfer
-  items           JSONB          NOT NULL DEFAULT '[]',
-  created_at      TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
-  updated_at      TIMESTAMPTZ    NOT NULL DEFAULT NOW()
-);
-
--- 7. Tabla: invoices (facturación SUNAT)
-CREATE TABLE IF NOT EXISTS invoices (
-  id              SERIAL PRIMARY KEY,
-  sale_id         INTEGER        REFERENCES sales(id) ON DELETE SET NULL,
-  customer_ruc    VARCHAR(11),
-  customer_name   VARCHAR(120),
-  serie           VARCHAR(4)     NOT NULL,   -- ej. F001
-  correlativo     VARCHAR(8)     NOT NULL,   -- ej. 00000001
-  total_amount    NUMERIC(12, 2) NOT NULL DEFAULT 0,
-  igv             NUMERIC(12, 2) NOT NULL DEFAULT 0,
-  status          VARCHAR(20)    NOT NULL DEFAULT 'draft',
-    -- valores posibles: draft | sent | accepted | rejected | voided
-  sunat_response  JSONB          DEFAULT '{}',
-  created_at      TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
-  updated_at      TIMESTAMPTZ    NOT NULL DEFAULT NOW()
-);
-
--- 8. Permisos a nivel de tabla para el usuario de la app
-GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA public TO mototrack_user;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO mototrack_user;
-
--- Asegurar que futuros objetos también tengan permisos
+-- Permisos por defecto para objetos futuros (tablas creadas por los schemas 2-5)
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
-  GRANT ALL ON TABLES    TO mototrack_user;
+  GRANT ALL ON TABLES TO mototrack_user;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT ALL ON SEQUENCES TO mototrack_user;
+
+-- =============================================================================
+-- SIGUIENTE PASO: abrir schema.sql y ejecutarlo también en mototrack_db
+-- =============================================================================
