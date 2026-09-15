@@ -54,6 +54,18 @@ Cada entrada indica el integrante responsable entre paréntesis.
 - Retrofit `inventory.service.js`: `create/update` guardan `force_approved_by = userId` al aprobar márgenes negativos (Jean Pool)
 - Retrofit de los 4 archivos `*.routes.js`: todas las rutas protegidas con `authenticate` + `authorize` por rol (Jean Pool)
 
+### Changed
+- La respuesta de `GET /api/workorders/`, `/:id` y `/placa/:placa` ahora expone los campos del vehículo (`placa`, `brand`, `model`, `customer_name`, `customer_phone`) directamente en el objeto principal de la Orden de Trabajo, en lugar de anidados bajo un objeto "vehicle". Decisión consciente: se prefiere la forma plana por simplicidad de consumo en frontend. (Jean Pool)
+- `auth.service.js`: payload JWT confirmado con `{ id, role, name }` y `expiresIn: '8h'` (sin cambio de lógica, documentado como corrección Fase 6). (Jean Pool)
+
+### Added (Fase 7)
+- Módulo de Dashboard y Reportes (`src/modules/dashboard/`): 5 endpoints de solo lectura, admin-only (Jean Pool)
+- `GET /api/dashboard` — panel combinado: ventas, inventario, OT y facturación en un solo JSON vía `Promise.all` (Jean Pool)
+- `GET /api/dashboard/sales` — resumen de ventas por rango de fechas: total, ingresos, desglose por método de pago, top 5 productos (Jean Pool)
+- `GET /api/dashboard/inventory` — total de productos activos, productos con stock bajo y valor total del inventario (Jean Pool)
+- `GET /api/dashboard/workorders` — conteo de OT por estado y conteo de OT activas (Jean Pool)
+- `GET /api/dashboard/invoicing` — conteo de comprobantes por estado; `pending_contingency` reutiliza `getPendingContingency()` de `invoicing.service.js` directamente (Jean Pool)
+
 ## [0.1.0] - Fase 1: Setup y Base de Datos
 ### Added
 - Estructura de carpetas modular del backend (routes/controller/service por módulo) (Jean Pool)
