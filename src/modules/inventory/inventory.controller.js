@@ -1,4 +1,5 @@
 import * as inventoryService from './inventory.service.js';
+import { analyzeProductImage } from './inventory.aiClient.js';
 
 // ─── Formato de respuesta uniforme ───────────────────────────────────────────
 
@@ -88,6 +89,68 @@ export async function deleteItem(req, res, next) {
     if (!deleted) return fail(res, 'Producto no encontrado o ya estaba inactivo.', 404);
     ok(res, { id: Number(req.params.id), is_active: false });
   } catch (err) {
+    next(err);
+  }
+}
+
+// ─── Fase 8: Escaneo con IA ───────────────────────────────────────────────────
+
+/**
+ * POST /api/inventory/scan  (RF-01)
+ *
+ * Analiza la imagen de un repuesto con Gemini y devuelve una sugerencia.
+ * NUNCA escribe en la base de datos. La creación real usa POST /api/inventory.
+ *
+ * Body: { image_base64: string, mime_type: string }
+ *
+ * requires_confirmation: true cuando confidence < 80 (mismo patrón que
+ * requiresApproval en workorders — el frontend debe pedir confirmación al usuario
+ * antes de usar los datos sugeridos para crear el producto).
+ */
+export async function scanProduct(req, res, next) {
+  try {
+    const { image_base64, mime_type } = req.body;
+
+    // Validación de presencia — ANTES de tocar la IA
+    if (!image_base64 || !mime_type) {
+      return fail(
+        res,
+        '"image_base64" y "mime_type" son obligatorios en el body.',
+        422
+      );
+    }
+
+    // Validación de tamaño: base64 → bytes originales ≈ base64.length * 0.75
+    const estimatedBytes = Math.ceil(image_base64.length * 0.75);
+    const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+    if (estimatedBytes > MAX_BYTES) {
+      return fail(res, 'Imagen demasiado grande (máximo 10 MB).', 422);
+    }
+
+    // Llamada a Gemini — puede lanzar AppError AI_SERVICE_ERROR
+    const result = await analyzeProductImage({
+      imageBase64: image_base64,
+      mimeType:    mime_type,
+    });
+
+    ok(res, {
+      detected_name:         result.detected_name,
+      detected_brand:        result.detected_brand,
+      confidence:            result.confidence,
+      latency_ms:            result.latency_ms,
+      // Si confidence < 80 el frontend debe mostrar un aviso de confirmación
+      // antes de usar los datos sugeridos para registrar el producto.
+      requires_confirmation: result.confidence < 80,
+      // Conveniencia para el frontend: campos listos para pre-llenar el formulario
+      suggested_product: {
+        name:                result.detected_name,
+        brand:               result.detected_brand,
+        ai_confidence:       result.confidence,
+        registration_method: 'ia',
+      },
+    });
+  } catch (err) {
+    if (err.code === 'AI_SERVICE_ERROR') return fail(res, err.message, 503);
     next(err);
   }
 }

@@ -66,6 +66,18 @@ Cada entrada indica el integrante responsable entre paréntesis.
 - `GET /api/dashboard/workorders` — conteo de OT por estado y conteo de OT activas (Jean Pool)
 - `GET /api/dashboard/invoicing` — conteo de comprobantes por estado; `pending_contingency` reutiliza `getPendingContingency()` de `invoicing.service.js` directamente (Jean Pool)
 
+### Added (Fase 8)
+- Dependencia `@google/genai` instalada (paquete oficial vigente de Google Gemini SDK) (Jean Pool)
+- `src/modules/inventory/inventory.aiClient.js`: cliente Gemini con salida JSON estructurada garantizada (`responseSchema`), medición de latencia y AppError `AI_SERVICE_ERROR` en caso de fallo (Jean Pool)
+- `POST /api/inventory/scan` (RF-01): escanea imagen de repuesto con Gemini `gemini-2.5-flash`, devuelve `detected_name`, `detected_brand`, `confidence`, `latency_ms` y `requires_confirmation`; nunca escribe en la BD (Jean Pool)
+- `requires_confirmation: true` cuando `confidence < 80` — mismo patrón que `requiresApproval` en workorders (Jean Pool)
+- Validación de tamaño de imagen antes de llamar a la IA: rechaza con 422 si supera 10 MB (Jean Pool)
+- `GEMINI_API_KEY` añadida a `.env` y `.env.example` (Jean Pool)
+- `ROADMAP.md` reescrito con el alcance actualizado (V1 vs V2, equipo en solitario desde Fase 6) (Jean Pool)
+
+### Verified (Fase 8)
+- Tarea 0: `create` y `update` en `inventory.service.js` ya guardaban correctamente `brand`, `compatible_models`, `ai_confidence` y `registration_method` desde la Fase 6. Cero cambios requeridos. (Jean Pool)
+
 ## [0.1.0] - Fase 1: Setup y Base de Datos
 ### Added
 - Estructura de carpetas modular del backend (routes/controller/service por módulo) (Jean Pool)
