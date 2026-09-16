@@ -44,7 +44,7 @@ export async function analyzeProductImage({ imageBase64, mimeType }) {
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+      model: 'gemini-3.5-flash-lite',   // ← cambiado desde 'gemini-3.6-flash' para cumplir RF-01 (<4s)
       contents: [
         {
           role: 'user',
@@ -60,6 +60,13 @@ export async function analyzeProductImage({ imageBase64, mimeType }) {
         },
       ],
       config: {
+        // thinkingConfig con nivel mínimo (SDK v2.22.0):
+        // "minimal" = mínimo razonamiento interno; suficiente para clasificación
+        // de imagen simple. Los modelos 3.5+ usan thinkingLevel en lugar de
+        // thinkingBudget (que está deprecated para esta familia de modelos).
+        thinkingConfig: {
+          thinkingLevel: 'minimal',
+        },
         responseMimeType: 'application/json',
         responseSchema: {
           type: 'object',
