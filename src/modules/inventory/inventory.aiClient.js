@@ -25,7 +25,34 @@ Se te mostrará la imagen de un empaque o de un repuesto. Tu tarea es:
    - 50-79: texto parcial o logo visible, identificación probable pero con dudas.
    - 0-49: imagen borrosa, empaque genérico o repuesto sin identificación clara.
 
+REGLA DE IDIOMA OBLIGATORIA: el campo detected_name SIEMPRE debe estar en español,
+sin importar el idioma del texto que aparezca en el empaque o la etiqueta de la imagen.
+Si el empaque dice "Oil Filter", escribe "Filtro de Aceite". Si dice "Brake Pads", escribe "Pastillas de Freno".
+
 Responde ÚNICAMENTE con el objeto JSON requerido, sin texto adicional.`;
+
+// ─── Precalentamiento de conexión ─────────────────────────────────────────────
+
+/**
+ * Fuerza el handshake TLS/DNS con la API de Gemini durante el arranque del servidor.
+ * Se llama en server.js sin await para no bloquear app.listen().
+ *
+ * Si falla (API key no configurada, sin red, etc.) solo loguea —
+ * NUNCA debe tumbar el proceso de arranque.
+ */
+export async function warmUp() {
+  try {
+    await ai.models.generateContent({
+      model: 'gemini-3.5-flash-lite',
+      contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+      config: { thinkingConfig: { thinkingLevel: 'minimal' } },
+    });
+    console.log('🔥  Gemini warm-up completado.');
+  } catch (err) {
+    // Fallo silencioso — el servidor arranca igual
+    console.warn(`⚠️   Gemini warm-up falló (${err.message ?? 'error desconocido'}). La primera llamada real puede ser más lenta.`);
+  }
+}
 
 // ─── Función principal ────────────────────────────────────────────────────────
 
