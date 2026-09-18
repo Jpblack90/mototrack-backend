@@ -11,8 +11,8 @@
 | 5 | Facturación SUNAT (mock PSE) | ✅ Completo |
 | 6 | Autenticación y Roles (JWT) | ✅ Completo |
 | 7 | Dashboard y Reportes | ✅ Completo |
-| 8 | Escaneo con IA (Gemini) | 🔄 En curso |
-| 9 | Frontend Web (React.js, responsive) | ⏳ Pendiente |
+| 8 | Escaneo con IA (Gemini) | ✅ Completo |
+| 9 | Frontend Web | 🔄 En curso — repositorio separado `mototrack-frontend/`, ver su propio ROADMAP.md |
 | 10 | Docker + Despliegue a GCP | ⏳ Pendiente |
 
 ## Decisión de Alcance — V1 vs V2 (registrada 2026-09-15)

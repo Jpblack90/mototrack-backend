@@ -77,6 +77,10 @@ Cada entrada indica el integrante responsable entre paréntesis.
 
 ### Verified (Fase 8)
 - Tarea 0: `create` y `update` en `inventory.service.js` ya guardaban correctamente `brand`, `compatible_models`, `ai_confidence` y `registration_method` desde la Fase 6. Cero cambios requeridos. (Jean Pool)
+### Fixed
+- Latencia del escaneo IA fuera de RF-01: se cambió el modelo de `gemini-3.6-flash` a `gemini-3.5-flash-lite` con `thinkingConfig.thinkingLevel: 'minimal'`, reduciendo la latencia de 7-27s a un rango estable de 2.0-2.4s. (Jean Pool)
+- Se agregó `warmUp()` en `inventory.aiClient.js`, invocado sin bloquear el arranque en `server.js`, eliminando el cold-start de conexión en el primer escaneo tras reiniciar el servidor. (Jean Pool)
+- Se forzó el idioma de salida del escaneo IA a español, corrigiendo una inconsistencia donde un mismo producto podía detectarse en español o inglés según la ejecución. (Jean Pool)
 
 ## [0.1.0] - Fase 1: Setup y Base de Datos
 ### Added
