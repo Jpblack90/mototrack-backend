@@ -101,7 +101,7 @@ export async function createSale(req, res, next) {
 export async function voidSale(req, res, next) {
   try {
     const { void_reason } = req.body;
-    const sale = await svc.voidSale(req.params.id, void_reason, req.user.company_id);
+    const sale = await svc.voidSale(req.params.id, void_reason, req.user.company_id, req.user?.id ?? null);
     ok(res, sale);
   } catch (err) {
     if (err.code) return fail(res, err.message, httpStatus(err.code));

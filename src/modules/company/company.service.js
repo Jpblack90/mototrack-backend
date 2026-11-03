@@ -1,5 +1,6 @@
 import pool from '../../config/database.js';
 import { AppError } from '../../shared/errors/AppError.js';
+import { logAudit, diffObjects } from '../../shared/audit.js';
 
 /**
  * Valida un número de RUC peruano según el algoritmo oficial de SUNAT (Módulo 11).
@@ -59,8 +60,9 @@ export async function getById(companyId) {
  * Actualiza los datos de configuración de una empresa.
  * @param {number} companyId
  * @param {object} data
+ * @param {number|null} [userId]
  */
-export async function update(companyId, data) {
+export async function update(companyId, data, userId = null) {
   const {
     ruc,
     razon_social,
@@ -97,14 +99,6 @@ export async function update(companyId, data) {
           422,
           'INVALID_RUC'
         );
-      }
-      // Verificar si otra empresa ya lo tiene registrado
-      const { rows: existing } = await pool.query(
-        'SELECT id FROM companies WHERE ruc = $1 AND id <> $2',
-        [trimmedRuc, companyId]
-      );
-      if (existing.length > 0) {
-        throw new AppError('El RUC ingresado ya pertenece a otra empresa.', 409, 'RUC_ALREADY_EXISTS');
       }
       sanitizedRuc = trimmedRuc;
     }
@@ -182,63 +176,145 @@ export async function update(companyId, data) {
   const sanitizedDireccion = direccion !== undefined ? (direccion ? String(direccion).trim() : null) : undefined;
   const sanitizedTelefono = telefono !== undefined ? (telefono ? String(telefono).trim().slice(0, 20) : null) : undefined;
 
-  // Construir consulta dinámica
-  const fields = [];
-  const values = [];
-  let paramIndex = 1;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  if (sanitizedRuc !== undefined) {
-    fields.push(`ruc = $${paramIndex++}`);
-    values.push(sanitizedRuc);
-  }
-  if (sanitizedRazonSocial !== undefined) {
-    fields.push(`razon_social = $${paramIndex++}`);
-    values.push(sanitizedRazonSocial);
-  }
-  if (sanitizedNombreComercial !== undefined) {
-    fields.push(`nombre_comercial = $${paramIndex++}`);
-    values.push(sanitizedNombreComercial);
-  }
-  if (sanitizedDireccion !== undefined) {
-    fields.push(`direccion = $${paramIndex++}`);
-    values.push(sanitizedDireccion);
-  }
-  if (sanitizedTelefono !== undefined) {
-    fields.push(`telefono = $${paramIndex++}`);
-    values.push(sanitizedTelefono);
-  }
-  if (sanitizedEmail !== undefined) {
-    fields.push(`email = $${paramIndex++}`);
-    values.push(sanitizedEmail);
-  }
-  if (sanitizedLogo !== undefined) {
-    fields.push(`logo_data = $${paramIndex++}`);
-    values.push(sanitizedLogo);
-  }
-  if (sanitizedIgvRate !== undefined) {
-    fields.push(`igv_rate = $${paramIndex++}`);
-    values.push(sanitizedIgvRate);
-  }
-  if (sanitizedApprovalThreshold !== undefined) {
-    fields.push(`approval_threshold = $${paramIndex++}`);
-    values.push(sanitizedApprovalThreshold);
-  }
-  if (sanitizedNotPickedUpDays !== undefined) {
-    fields.push(`not_picked_up_days = $${paramIndex++}`);
-    values.push(sanitizedNotPickedUpDays);
-  }
+    // Bloquear y obtener datos previos
+    const { rows: existingRows } = await client.query(
+      `SELECT * FROM companies WHERE id = $1 FOR UPDATE`,
+      [companyId]
+    );
+    if (existingRows.length === 0) {
+      throw new AppError('Empresa no encontrada.', 404, 'NOT_FOUND');
+    }
+    const existing = existingRows[0];
 
-  if (fields.length === 0) {
-    return getById(companyId);
+    // Verificar unicidad de RUC si cambió
+    if (sanitizedRuc) {
+      const { rows: existingRuc } = await client.query(
+        'SELECT id FROM companies WHERE ruc = $1 AND id <> $2',
+        [sanitizedRuc, companyId]
+      );
+      if (existingRuc.length > 0) {
+        throw new AppError('El RUC ingresado ya pertenece a otra empresa.', 409, 'RUC_ALREADY_EXISTS');
+      }
+    }
+
+    // Construir consulta dinámica
+    const fields = [];
+    const values = [];
+    let paramIndex = 1;
+
+    if (sanitizedRuc !== undefined) {
+      fields.push(`ruc = $${paramIndex++}`);
+      values.push(sanitizedRuc);
+    }
+    if (sanitizedRazonSocial !== undefined) {
+      fields.push(`razon_social = $${paramIndex++}`);
+      values.push(sanitizedRazonSocial);
+    }
+    if (sanitizedNombreComercial !== undefined) {
+      fields.push(`nombre_comercial = $${paramIndex++}`);
+      values.push(sanitizedNombreComercial);
+    }
+    if (sanitizedDireccion !== undefined) {
+      fields.push(`direccion = $${paramIndex++}`);
+      values.push(sanitizedDireccion);
+    }
+    if (sanitizedTelefono !== undefined) {
+      fields.push(`telefono = $${paramIndex++}`);
+      values.push(sanitizedTelefono);
+    }
+    if (sanitizedEmail !== undefined) {
+      fields.push(`email = $${paramIndex++}`);
+      values.push(sanitizedEmail);
+    }
+    if (sanitizedLogo !== undefined) {
+      fields.push(`logo_data = $${paramIndex++}`);
+      values.push(sanitizedLogo);
+    }
+    if (sanitizedIgvRate !== undefined) {
+      fields.push(`igv_rate = $${paramIndex++}`);
+      values.push(sanitizedIgvRate);
+    }
+    if (sanitizedApprovalThreshold !== undefined) {
+      fields.push(`approval_threshold = $${paramIndex++}`);
+      values.push(sanitizedApprovalThreshold);
+    }
+    if (sanitizedNotPickedUpDays !== undefined) {
+      fields.push(`not_picked_up_days = $${paramIndex++}`);
+      values.push(sanitizedNotPickedUpDays);
+    }
+
+    if (fields.length > 0) {
+      fields.push(`updated_at = NOW()`);
+      values.push(companyId);
+
+      await client.query(
+        `UPDATE companies SET ${fields.join(', ')} WHERE id = $${paramIndex}`,
+        values
+      );
+    }
+
+    // Obtener empresa actualizada
+    const { rows: updatedRows } = await client.query(
+      `SELECT id, ruc, razon_social, nombre_comercial, direccion, telefono, email,
+              logo_data, igv_rate, approval_threshold, not_picked_up_days, status
+       FROM companies WHERE id = $1`,
+      [companyId]
+    );
+    const updatedCompany = updatedRows[0];
+
+    // Calcular diferencias (diff)
+    const tracked = [
+      'ruc',
+      'razon_social',
+      'nombre_comercial',
+      'direccion',
+      'telefono',
+      'email',
+      'igv_rate',
+      'approval_threshold',
+      'not_picked_up_days',
+    ];
+    const diff = diffObjects(existing, updatedCompany, tracked) || {};
+
+    // Manejo de logo_data para auditoría: NUNCA guardar la cadena base64 completa
+    if (sanitizedLogo !== undefined) {
+      const oldLogo = existing.logo_data;
+      const newLogo = updatedCompany.logo_data;
+      if (oldLogo !== newLogo) {
+        diff.logo_data = {
+          old: oldLogo ? 'logo previo' : null,
+          new: newLogo ? 'logo cambiado' : null,
+        };
+      }
+    }
+
+    if (Object.keys(diff).length > 0) {
+      await logAudit(client, {
+        companyId,
+        userId,
+        entity: 'company',
+        entityId: companyId,
+        action: 'update',
+        changes: diff,
+      });
+    }
+
+    await client.query('COMMIT');
+
+    return {
+      ...updatedCompany,
+      igv_rate: parseFloat(updatedCompany.igv_rate),
+      approval_threshold: parseFloat(updatedCompany.approval_threshold),
+      not_picked_up_days: parseInt(updatedCompany.not_picked_up_days, 10),
+    };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
   }
-
-  fields.push(`updated_at = NOW()`);
-  values.push(companyId);
-
-  await pool.query(
-    `UPDATE companies SET ${fields.join(', ')} WHERE id = $${paramIndex}`,
-    values
-  );
-
-  return getById(companyId);
 }

@@ -13,7 +13,8 @@
     "seed:test-company": "node scripts/tests/seed-test-company.js",
     "test:isolation": "node scripts/tests/test-isolation.js",
     "test:company": "node scripts/tests/verify-11-2b.js",
-    "test:users": "node scripts/tests/verify-11-3.js"
+    "test:users": "node scripts/tests/verify-11-3.js",
+    "test:audit": "node scripts/tests/verify-11-4.js"
   },
   "keywords": [
     "mototrack",

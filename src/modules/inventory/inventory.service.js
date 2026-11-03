@@ -1,4 +1,5 @@
 import pool from '../../config/database.js';
+import { logAudit, diffObjects } from '../../shared/audit.js';
 
 // ─── Categorías oficiales de productos ────────────────────────────────────────
 
@@ -206,31 +207,78 @@ export async function create(data, companyId, userId = null) {
   const forceApprovedBy = force === true ? (userId ?? null) : null;
   const sanitizedModels = sanitizeCompatibleModels(compatible_models);
 
-  const { rows } = await pool.query(
-    `INSERT INTO products
-       (company_id, sku, name, brand, category, compatible_models, cost_price, sale_price,
-        stock, min_stock, ai_confidence, registration_method, force_approved_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-     RETURNING *`,
-    [
-      companyId,
-      sku ?? null,
-      name.trim(),
-      brand ?? null,
-      category || null,
-      sanitizedModels,
-      Number(cost_price),
-      Number(sale_price),
-      Number(stock),
-      Number(min_stock),
-      ai_confidence != null ? Number(ai_confidence) : null,
-      registration_method,
-      forceApprovedBy,
-    ]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  const p = rows[0];
-  return { ...p, margin: calcMargin(p.sale_price, p.cost_price) };
+    const { rows } = await client.query(
+      `INSERT INTO products
+         (company_id, sku, name, brand, category, compatible_models, cost_price, sale_price,
+          stock, min_stock, ai_confidence, registration_method, force_approved_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       RETURNING *`,
+      [
+        companyId,
+        sku ?? null,
+        name.trim(),
+        brand ?? null,
+        category || null,
+        sanitizedModels,
+        Number(cost_price),
+        Number(sale_price),
+        Number(stock),
+        Number(min_stock),
+        ai_confidence != null ? Number(ai_confidence) : null,
+        registration_method,
+        forceApprovedBy,
+      ]
+    );
+
+    const p = rows[0];
+
+    // Log de auditoría: creación de producto
+    await logAudit(client, {
+      companyId,
+      userId,
+      entity: 'product',
+      entityId: p.id,
+      action: 'create',
+      changes: {
+        name: { new: p.name },
+        cost_price: { new: Number(p.cost_price) },
+        sale_price: { new: Number(p.sale_price) },
+        stock: { new: Number(p.stock) },
+        min_stock: { new: Number(p.min_stock) },
+        category: { new: p.category },
+        compatible_models: { new: p.compatible_models || [] },
+      },
+    });
+
+    // Log de auditoría adicional si se forzó margen negativo
+    if (force === true) {
+      await logAudit(client, {
+        companyId,
+        userId,
+        entity: 'product',
+        entityId: p.id,
+        action: 'forced_negative_margin',
+        changes: {
+          cost_price: Number(p.cost_price),
+          sale_price: Number(p.sale_price),
+          margin: calcMargin(p.sale_price, p.cost_price),
+          approved_by: userId,
+        },
+      });
+    }
+
+    await client.query('COMMIT');
+    return { ...p, margin: calcMargin(p.sale_price, p.cost_price) };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /**
@@ -244,91 +292,161 @@ export async function create(data, companyId, userId = null) {
  * @returns {object|null} null si no existe o está inactivo
  */
 export async function update(id, data, companyId, userId = null) {
-  // Verificar que el producto existe y pertenece a la empresa
-  const existing = await getById(id, companyId);
-  if (!existing) return null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  // Si el caller no envió algún precio, usamos el valor actual de la BD
-  const merged = {
-    name: data.name ?? existing.name,
-    cost_price: data.cost_price ?? existing.cost_price,
-    sale_price: data.sale_price ?? existing.sale_price,
-    force: data.force,
-    category: data.category !== undefined ? data.category : existing.category,
-    compatible_models: data.compatible_models !== undefined ? data.compatible_models : existing.compatible_models,
-  };
+    // Verificar que el producto existe y pertenece a la empresa (bloqueando fila para update)
+    const { rows: existingRows } = await client.query(
+      `SELECT * FROM products WHERE id = $1 AND company_id = $2 AND is_active = true FOR UPDATE`,
+      [id, companyId]
+    );
+    if (!existingRows[0]) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+    const existing = existingRows[0];
 
-  validateProductData(merged);
+    // Si el caller no envió algún precio, usamos el valor actual de la BD
+    const merged = {
+      name: data.name ?? existing.name,
+      cost_price: data.cost_price ?? existing.cost_price,
+      sale_price: data.sale_price ?? existing.sale_price,
+      force: data.force,
+      category: data.category !== undefined ? data.category : existing.category,
+      compatible_models: data.compatible_models !== undefined ? data.compatible_models : existing.compatible_models,
+    };
 
-  const {
-    sku,
-    name,
-    brand,
-    category,
-    compatible_models,
-    cost_price,
-    sale_price,
-    stock,
-    min_stock,
-    ai_confidence,
-    registration_method,
-    force,
-  } = data;
+    validateProductData(merged);
 
-  // force_approved_by solo se actualiza si el admin usó force:true
-  const forceApprovedBy = force === true ? (userId ?? null) : null;
+    const {
+      sku,
+      name,
+      brand,
+      category,
+      compatible_models,
+      cost_price,
+      sale_price,
+      stock,
+      min_stock,
+      ai_confidence,
+      registration_method,
+      force,
+    } = data;
 
-  const hasCategory = category !== undefined;
-  const categoryVal = (hasCategory && category && typeof category === 'string' && category.trim() !== '')
-    ? category.trim()
-    : null;
+    // force_approved_by solo se actualiza si el admin usó force:true
+    const forceApprovedBy = force === true ? (userId ?? null) : null;
 
-  const hasCompatibleModels = compatible_models !== undefined;
-  const modelsVal = hasCompatibleModels && Array.isArray(compatible_models)
-    ? sanitizeCompatibleModels(compatible_models)
-    : [];
+    const hasCategory = category !== undefined;
+    const categoryVal = (hasCategory && category && typeof category === 'string' && category.trim() !== '')
+      ? category.trim()
+      : null;
 
-  const { rows } = await pool.query(
-    `UPDATE products
-     SET
-       sku                 = COALESCE($1,  sku),
-       name                = COALESCE($2,  name),
-       brand               = COALESCE($3,  brand),
-       category            = CASE WHEN $4::boolean THEN $5::varchar ELSE category END,
-       compatible_models   = CASE WHEN $6::boolean THEN $7::text[]  ELSE compatible_models END,
-       cost_price          = COALESCE($8,  cost_price),
-       sale_price          = COALESCE($9,  sale_price),
-       stock               = COALESCE($10, stock),
-       min_stock           = COALESCE($11, min_stock),
-       ai_confidence       = COALESCE($12, ai_confidence),
-       registration_method = COALESCE($13, registration_method),
-       force_approved_by   = COALESCE($14, force_approved_by),
-       updated_at          = NOW()
-     WHERE id = $15 AND company_id = $16 AND is_active = true
-     RETURNING *`,
-    [
-      sku ?? null,
-      name ? name.trim() : null,
-      brand ?? null,
-      hasCategory,
-      categoryVal,
-      hasCompatibleModels,
-      modelsVal,
-      cost_price != null ? Number(cost_price) : null,
-      sale_price != null ? Number(sale_price) : null,
-      stock != null ? Number(stock) : null,
-      min_stock != null ? Number(min_stock) : null,
-      ai_confidence != null ? Number(ai_confidence) : null,
-      registration_method ?? null,
-      forceApprovedBy,
-      id,
-      companyId,
-    ]
-  );
+    const hasCompatibleModels = compatible_models !== undefined;
+    const modelsVal = hasCompatibleModels && Array.isArray(compatible_models)
+      ? sanitizeCompatibleModels(compatible_models)
+      : [];
 
-  if (!rows[0]) return null;
-  const p = rows[0];
-  return { ...p, margin: calcMargin(p.sale_price, p.cost_price) };
+    const { rows } = await client.query(
+      `UPDATE products
+       SET
+         sku                 = COALESCE($1,  sku),
+         name                = COALESCE($2,  name),
+         brand               = COALESCE($3,  brand),
+         category            = CASE WHEN $4::boolean THEN $5::varchar ELSE category END,
+         compatible_models   = CASE WHEN $6::boolean THEN $7::text[]  ELSE compatible_models END,
+         cost_price          = COALESCE($8,  cost_price),
+         sale_price          = COALESCE($9,  sale_price),
+         stock               = COALESCE($10, stock),
+         min_stock           = COALESCE($11, min_stock),
+         ai_confidence       = COALESCE($12, ai_confidence),
+         registration_method = COALESCE($13, registration_method),
+         force_approved_by   = COALESCE($14, force_approved_by),
+         updated_at          = NOW()
+       WHERE id = $15 AND company_id = $16 AND is_active = true
+       RETURNING *`,
+      [
+        sku ?? null,
+        name ? name.trim() : null,
+        brand ?? null,
+        hasCategory,
+        categoryVal,
+        hasCompatibleModels,
+        modelsVal,
+        cost_price != null ? Number(cost_price) : null,
+        sale_price != null ? Number(sale_price) : null,
+        stock != null ? Number(stock) : null,
+        min_stock != null ? Number(min_stock) : null,
+        ai_confidence != null ? Number(ai_confidence) : null,
+        registration_method ?? null,
+        forceApprovedBy,
+        id,
+        companyId,
+      ]
+    );
+
+    if (!rows[0]) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+    const p = rows[0];
+
+    // Calcular diff para auditoría
+    const newValuesForDiff = {
+      name: name !== undefined ? name.trim() : undefined,
+      cost_price: cost_price != null ? Number(cost_price) : undefined,
+      sale_price: sale_price != null ? Number(sale_price) : undefined,
+      stock: stock != null ? Number(stock) : undefined,
+      min_stock: min_stock != null ? Number(min_stock) : undefined,
+      category: hasCategory ? categoryVal : undefined,
+      compatible_models: hasCompatibleModels ? modelsVal : undefined,
+    };
+
+    const diff = diffObjects(existing, newValuesForDiff, [
+      'name',
+      'cost_price',
+      'sale_price',
+      'stock',
+      'min_stock',
+      'category',
+      'compatible_models',
+    ]);
+
+    if (diff) {
+      await logAudit(client, {
+        companyId,
+        userId,
+        entity: 'product',
+        entityId: Number(id),
+        action: 'update',
+        changes: diff,
+      });
+    }
+
+    if (force === true) {
+      await logAudit(client, {
+        companyId,
+        userId,
+        entity: 'product',
+        entityId: Number(id),
+        action: 'forced_negative_margin',
+        changes: {
+          cost_price: Number(p.cost_price),
+          sale_price: Number(p.sale_price),
+          margin: calcMargin(p.sale_price, p.cost_price),
+          approved_by: userId,
+        },
+      });
+    }
+
+    await client.query('COMMIT');
+    return { ...p, margin: calcMargin(p.sale_price, p.cost_price) };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /**
@@ -337,15 +455,51 @@ export async function update(id, data, companyId, userId = null) {
  *
  * @param {number|string} id
  * @param {number}        companyId
+ * @param {number|null}   userId
  * @returns {boolean} false si el producto no existe o ya estaba inactivo
  */
-export async function remove(id, companyId) {
-  const { rowCount } = await pool.query(
-    `UPDATE products SET is_active = false, updated_at = NOW()
-     WHERE id = $1 AND company_id = $2 AND is_active = true`,
-    [id, companyId]
-  );
-  return rowCount > 0;
+export async function remove(id, companyId, userId = null) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
+      `SELECT id, name, is_active FROM products
+       WHERE id = $1 AND company_id = $2 AND is_active = true
+       FOR UPDATE`,
+      [id, companyId]
+    );
+
+    if (!rows[0]) {
+      await client.query('ROLLBACK');
+      return false;
+    }
+
+    const { rowCount } = await client.query(
+      `UPDATE products SET is_active = false, updated_at = NOW()
+       WHERE id = $1 AND company_id = $2 AND is_active = true`,
+      [id, companyId]
+    );
+
+    if (rowCount > 0) {
+      await logAudit(client, {
+        companyId,
+        userId,
+        entity: 'product',
+        entityId: Number(id),
+        action: 'deactivate',
+        changes: { is_active: { old: true, new: false } },
+      });
+    }
+
+    await client.query('COMMIT');
+    return rowCount > 0;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 // =============================================================================

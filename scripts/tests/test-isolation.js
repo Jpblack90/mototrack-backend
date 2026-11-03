@@ -606,6 +606,48 @@ async function run() {
     );
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Caso 15: Aislamiento en Consulta de Auditoría (/api/audit)
+    // ─────────────────────────────────────────────────────────────────────────
+    console.log('--- Caso 15: Aislamiento en Consulta de Auditoría (/api/audit) ---');
+
+    // 15a: Generar un log en Empresa A actualizando su producto
+    await request(`/inventory/${companyA.productId}`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${tokenA}` },
+      body: { sale_price: 99.50 },
+    });
+
+    // 15b: Admin B consulta los logs filtrando por el product_id de A -> debe devolver 0 logs
+    const c15a = await request(`/audit?entity=product&entity_id=${companyA.productId}`, {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    const logsEntityAFromB = c15a.data?.data?.logs || [];
+    assert(
+      c15a.status === 200 && logsEntityAFromB.length === 0,
+      'Admin de B no puede ver logs de un producto de la Empresa A (responde 0 logs)',
+      `status: ${c15a.status}, logs: ${logsEntityAFromB.length}`
+    );
+
+    // 15c: Admin B consulta todos los logs de su empresa -> ninguno pertenece a la empresa A
+    const { rows: auditRowsA } = await pool.query(
+      'SELECT id FROM audit_logs WHERE company_id = $1',
+      [companyAId]
+    );
+    const auditIdsA = new Set(auditRowsA.map((r) => Number(r.id)));
+
+    const c15b = await request('/audit', {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    const logsOfB = c15b.data?.data?.logs || [];
+    const containsLogOfA = logsOfB.some((l) => auditIdsA.has(Number(l.id)) || Number(l.company_id) === Number(companyAId));
+
+    assert(
+      c15b.status === 200 && !containsLogOfA,
+      'Listado de auditoría de B no contiene ningún registro perteneciente a la Empresa A',
+      `status: ${c15b.status}, total_logs_b: ${logsOfB.length}`
+    );
+
+    // ─────────────────────────────────────────────────────────────────────────
     // VERIFICACIÓN FINAL: EMPRESA REAL INTACTA
     // ─────────────────────────────────────────────────────────────────────────
     if (realCompanyId && initialRealCounts) {

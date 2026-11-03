@@ -4,6 +4,18 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Fase 11 - Tarea 11.4)
+- Migración `scripts/migrations/006_auditoria.sql`: tabla `audit_logs` con PK `BIGSERIAL`, `company_id NOT NULL REFERENCES companies`, `user_id REFERENCES users`, `entity`, `entity_id`, `action`, `changes JSONB`, `created_at TIMESTAMPTZ`, índices `(company_id, created_at DESC)` y `(company_id, entity, entity_id)`, y trigger `trg_audit_logs_immutable` para inmutabilidad estricta (bloquea UPDATE y DELETE) (Jean Pool)
+- Helper transaccional `src/shared/audit.js` con funciones `logAudit` y `diffObjects` para atomicidad estricta dentro de transacciones activas de PostgreSQL (Jean Pool)
+- Auditoría en `src/modules/inventory/inventory.service.js` para creación, desactivación, margen negativo forzado y modificación con diff de precios, stock y compatibilidad (Jean Pool)
+- Auditoría en `src/modules/sales/sales.service.js` para anulación de ventas (`void`) registrando motivo y stock restituido por producto (Jean Pool)
+- Auditoría en `src/modules/invoicing/invoicing.service.js` para reintentos de comprobantes en contingencia (`retry_contingency`) (Jean Pool)
+- Auditoría en `src/modules/users/users.service.js` para creación, desactivación, reactivación, cambio de rol y reseteo de contraseñas sin registrar claves ni hashes (Jean Pool)
+- Auditoría en `src/modules/company/company.service.js` para cambios de configuración con enmascaramiento de `logo_data` ("logo cambiado") (Jean Pool)
+- Módulo `src/modules/audit/` (`audit.routes.js`, `audit.controller.js`, `audit.service.js`) montado en `/api/audit` protegido para rol `admin` con filtros combinados y paginación (Jean Pool)
+- Caso 15 en `scripts/tests/test-isolation.js` validando aislamiento de registros de auditoría entre empresas (Jean Pool)
+- Suite de pruebas automatizadas `scripts/tests/verify-11-4.js` (`npm run test:audit`) con 21 pruebas de inmutabilidad, atomicidad, rollback, diffing y RBAC (Jean Pool)
+
 ### Added (Fase 11 - Tarea 11.3)
 - Migración `scripts/migrations/005_usuarios_seguridad.sql`: agrega columnas `must_change_password BOOLEAN NOT NULL DEFAULT false` y `last_login_at TIMESTAMPTZ` a la tabla `users` (Jean Pool)
 - Módulo `src/shared/utils/passwordPolicy.js` con validador de políticas de seguridad de contraseñas (mínimo 8 caracteres, al menos una letra y un número) (Jean Pool)

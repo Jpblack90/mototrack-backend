@@ -91,7 +91,7 @@ export async function updateItem(req, res, next) {
  */
 export async function deleteItem(req, res, next) {
   try {
-    const deleted = await inventoryService.remove(req.params.id, req.user.company_id);
+    const deleted = await inventoryService.remove(req.params.id, req.user.company_id, req.user?.id ?? null);
     if (!deleted) return fail(res, 'Producto no encontrado o ya estaba inactivo.', 404);
     ok(res, { id: Number(req.params.id), is_active: false });
   } catch (err) {

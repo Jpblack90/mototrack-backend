@@ -1,4 +1,5 @@
 import pool from '../../config/database.js';
+import { logAudit } from '../../shared/audit.js';
 import { decrementStock, restoreStock } from '../inventory/inventory.service.js';
 
 // ─── Errores controlados ──────────────────────────────────────────────────────
@@ -363,7 +364,7 @@ export async function getById(id, companyId) {
  * @param {string}        void_reason  Motivo obligatorio de anulación
  * @param {number}        companyId
  */
-export async function voidSale(id, void_reason, companyId) {
+export async function voidSale(id, void_reason, companyId, userId = null) {
   if (!void_reason || String(void_reason).trim() === '') {
     throw new AppError('"void_reason" es obligatorio para anular una venta.', 'MISSING_FIELD', 422);
   }
@@ -390,11 +391,14 @@ export async function voidSale(id, void_reason, companyId) {
       [id]
     );
 
+    const restoredStock = [];
+
     // Restaurar stock
     for (const item of saleItems) {
       if (item.product_id != null) {
         // Producto directo: restaurar qty
         await restoreStock(client, item.product_id, item.quantity, companyId);
+        restoredStock.push({ product_id: item.product_id, quantity: item.quantity });
       } else if (item.kit_id != null) {
         // Kit: restaurar cada componente en la cantidad correspondiente
         const { rows: components } = await client.query(
@@ -402,7 +406,9 @@ export async function voidSale(id, void_reason, companyId) {
           [item.kit_id]
         );
         for (const comp of components) {
-          await restoreStock(client, comp.product_id, comp.quantity * item.quantity, companyId);
+          const qtyToRestore = comp.quantity * item.quantity;
+          await restoreStock(client, comp.product_id, qtyToRestore, companyId);
+          restoredStock.push({ product_id: comp.product_id, quantity: qtyToRestore, from_kit_id: item.kit_id });
         }
       }
     }
@@ -415,6 +421,19 @@ export async function voidSale(id, void_reason, companyId) {
        RETURNING *`,
       [void_reason.trim(), id, companyId]
     );
+
+    // Registrar en auditoría la anulación de la venta y el stock restituido
+    await logAudit(client, {
+      companyId,
+      userId,
+      entity: 'sale',
+      entityId: Number(id),
+      action: 'void',
+      changes: {
+        void_reason: void_reason.trim(),
+        restored_stock: restoredStock,
+      },
+    });
 
     await client.query('COMMIT');
     return updated[0];

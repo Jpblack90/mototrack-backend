@@ -41,7 +41,7 @@ export async function getUser(req, res, next) {
 
 export async function createUser(req, res, next) {
   try {
-    const user = await svc.create(req.body, req.user.company_id);
+    const user = await svc.create(req.body, req.user.company_id, req.user.id);
     ok(res, user, 201);
   } catch (err) {
     if (err.code) return fail(res, err.message, err.statusCode || httpStatus(err.code), err.code);
@@ -72,7 +72,7 @@ export async function removeUser(req, res, next) {
 
 export async function resetUserPassword(req, res, next) {
   try {
-    const user = await svc.resetPassword(req.params.id, req.body, req.user.company_id);
+    const user = await svc.resetPassword(req.params.id, req.body, req.user.company_id, req.user.id);
     ok(res, {
       id: user.id,
       must_change_password: user.must_change_password,

@@ -1,5 +1,6 @@
 import pool from '../../config/database.js';
 import { sendComprobante } from './invoicing.pseClient.js';
+import { logAudit } from '../../shared/audit.js';
 
 // ─── Errores controlados ──────────────────────────────────────────────────────
 
@@ -265,55 +266,77 @@ export async function createInvoice({
  * @param {number|string} id  ID del invoice
  * @param {number} companyId
  */
-export async function retryContingency(id, companyId) {
-  const { rows } = await pool.query(
-    `SELECT * FROM invoices WHERE id = $1 AND company_id = $2`,
-    [id, companyId]
-  );
-  if (!rows[0]) {
-    throw new AppError(`Invoice #${id} no encontrado.`, 'INVOICE_NOT_FOUND', 404);
-  }
-  const invoice = rows[0];
-
-  if (invoice.estado !== 'contingency') {
-    throw new AppError(
-      `El invoice #${id} tiene estado '${invoice.estado}'. Solo se pueden reintentar comprobantes en contingencia.`,
-      'NOTHING_TO_RETRY',
-      422
-    );
-  }
-
-  // Reenviar sin simulatePseDown — se asume que el PSE ya está disponible
-  let updatedInvoice;
+export async function retryContingency(id, companyId, userId = null) {
+  const client = await pool.connect();
   try {
-    const pseResult = await sendComprobante({ xml: invoice.xml_content, simulatePseDown: false });
+    await client.query('BEGIN');
 
-    const { rows: updated } = await pool.query(
-      `UPDATE invoices
-       SET estado = 'accepted', cdr_response = $1, is_contingency = false, updated_at = NOW()
-       WHERE id = $2 AND company_id = $3
-       RETURNING *`,
-      [JSON.stringify(pseResult.cdr), id, companyId]
+    const { rows } = await client.query(
+      `SELECT * FROM invoices WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [id, companyId]
     );
-    updatedInvoice = updated[0];
+    if (!rows[0]) {
+      throw new AppError(`Invoice #${id} no encontrado.`, 'INVOICE_NOT_FOUND', 404);
+    }
+    const invoice = rows[0];
 
-  } catch (pseErr) {
-    if (pseErr.code === 'PSE_UNAVAILABLE') {
-      // Sigue sin poder enviar — se mantiene en contingency
-      const { rows: updated } = await pool.query(
+    if (invoice.estado !== 'contingency') {
+      throw new AppError(
+        `El invoice #${id} tiene estado '${invoice.estado}'. Solo se pueden reintentar comprobantes en contingencia.`,
+        'NOTHING_TO_RETRY',
+        422
+      );
+    }
+
+    // Reenviar sin simulatePseDown — se asume que el PSE ya está disponible
+    let updatedInvoice;
+    try {
+      const pseResult = await sendComprobante({ xml: invoice.xml_content, simulatePseDown: false });
+
+      const { rows: updated } = await client.query(
         `UPDATE invoices
-         SET cdr_response = $1, updated_at = NOW()
+         SET estado = 'accepted', cdr_response = $1, is_contingency = false, updated_at = NOW()
          WHERE id = $2 AND company_id = $3
          RETURNING *`,
-        [JSON.stringify({ error: pseErr.message, retried_at: new Date().toISOString() }), id, companyId]
+        [JSON.stringify(pseResult.cdr), id, companyId]
       );
       updatedInvoice = updated[0];
-    } else {
-      throw pseErr;
-    }
-  }
 
-  return updatedInvoice;
+    } catch (pseErr) {
+      if (pseErr.code === 'PSE_UNAVAILABLE') {
+        // Sigue sin poder enviar — se mantiene en contingency
+        const { rows: updated } = await client.query(
+          `UPDATE invoices
+           SET cdr_response = $1, updated_at = NOW()
+           WHERE id = $2 AND company_id = $3
+           RETURNING *`,
+          [JSON.stringify({ error: pseErr.message, retried_at: new Date().toISOString() }), id, companyId]
+        );
+        updatedInvoice = updated[0];
+      } else {
+        throw pseErr;
+      }
+    }
+
+    await logAudit(client, {
+      companyId,
+      userId,
+      entity: 'invoice',
+      entityId: Number(id),
+      action: 'retry_contingency',
+      changes: {
+        estado: { old: 'contingency', new: updatedInvoice.estado },
+      },
+    });
+
+    await client.query('COMMIT');
+    return updatedInvoice;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /**

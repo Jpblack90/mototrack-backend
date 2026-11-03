@@ -22,7 +22,7 @@ export async function getCompany(req, res, next) {
  */
 export async function updateCompany(req, res, next) {
   try {
-    const updated = await companyService.update(req.user.company_id, req.body);
+    const updated = await companyService.update(req.user.company_id, req.body, req.user?.id ?? null);
     ok(res, updated);
   } catch (err) {
     next(err);

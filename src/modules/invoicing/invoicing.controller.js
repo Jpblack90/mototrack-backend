@@ -112,7 +112,7 @@ export async function createInvoice(req, res, next) {
  */
 export async function retryContingency(req, res, next) {
   try {
-    const invoice = await svc.retryContingency(req.params.id, req.user.company_id);
+    const invoice = await svc.retryContingency(req.params.id, req.user.company_id, req.user?.id ?? null);
     ok(res, invoice);
   } catch (err) {
     if (err.code || err.statusCode) return fail(res, err.message, httpStatus(err));
