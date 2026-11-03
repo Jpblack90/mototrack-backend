@@ -25,9 +25,11 @@ export async function login({ email, password }) {
   }
 
   const { rows } = await pool.query(
-    `SELECT id, name, email, password_hash, role
-     FROM   users
-     WHERE  email = $1 AND is_active = true`,
+    `SELECT u.id, u.name, u.email, u.password_hash, u.role, u.company_id,
+            c.status AS company_status, c.is_active AS company_is_active
+     FROM   users u
+     JOIN   companies c ON c.id = u.company_id
+     WHERE  u.email = $1 AND u.is_active = true`,
     [email.trim().toLowerCase()]
   );
 
@@ -43,15 +45,35 @@ export async function login({ email, password }) {
     throw new AppError(INVALID_CREDENTIALS_MSG, 'INVALID_CREDENTIALS', 401);
   }
 
+  // Verificar estado de la empresa asociada
+  if (!user.company_is_active || user.company_status === 'suspended') {
+    throw new AppError(
+      'La empresa asociada a esta cuenta se encuentra suspendida o inactiva.',
+      'COMPANY_INACTIVE',
+      403
+    );
+  }
+
   const token = jwt.sign(
-    { id: user.id, role: user.role, name: user.name },
+    {
+      id: user.id,
+      role: user.role,
+      name: user.name,
+      company_id: user.company_id,
+    },
     process.env.JWT_SECRET,
     { expiresIn: '8h' }
   );
 
   return {
     token,
-    user: { id: user.id, name: user.name, email: user.email, role: user.role },
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      company_id: user.company_id,
+    },
     // password_hash NUNCA se incluye en la respuesta
   };
 }

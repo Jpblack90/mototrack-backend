@@ -10,7 +10,7 @@ const fail = (res, message, status) => res.status(status).json({ success: false,
 export async function getFullDashboard(req, res, next) {
   try {
     const { from, to } = req.query;
-    const data = await svc.getFullDashboard({ from, to });
+    const data = await svc.getFullDashboard({ from, to }, req.user.company_id);
     ok(res, data);
   } catch (err) {
     next(err);
@@ -24,7 +24,7 @@ export async function getFullDashboard(req, res, next) {
 export async function getSalesSummary(req, res, next) {
   try {
     const { from, to } = req.query;
-    ok(res, await svc.getSalesSummary({ from, to }));
+    ok(res, await svc.getSalesSummary({ from, to }, req.user.company_id));
   } catch (err) {
     next(err);
   }
@@ -35,7 +35,7 @@ export async function getSalesSummary(req, res, next) {
  */
 export async function getInventorySummary(req, res, next) {
   try {
-    ok(res, await svc.getInventorySummary());
+    ok(res, await svc.getInventorySummary(req.user.company_id));
   } catch (err) {
     next(err);
   }
@@ -46,7 +46,7 @@ export async function getInventorySummary(req, res, next) {
  */
 export async function getWorkOrdersSummary(req, res, next) {
   try {
-    ok(res, await svc.getWorkOrdersSummary());
+    ok(res, await svc.getWorkOrdersSummary(req.user.company_id));
   } catch (err) {
     next(err);
   }
@@ -57,7 +57,7 @@ export async function getWorkOrdersSummary(req, res, next) {
  */
 export async function getInvoicingSummary(req, res, next) {
   try {
-    ok(res, await svc.getInvoicingSummary());
+    ok(res, await svc.getInvoicingSummary(req.user.company_id));
   } catch (err) {
     next(err);
   }

@@ -4,6 +4,18 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Fase 11 - Tarea 11.2a)
+- Migración `scripts/migrations/003_multi_tenant.sql`: creación de tabla `companies`, columna `company_id NOT NULL` con FK e índices en todas las tablas transaccionales (`users`, `products`, `kits`, `sales`, `vehicles`, `work_orders`, `invoices`, `notifications`) (Jean Pool)
+- Claves compuestas de unicidad por empresa: `products_company_sku_key (company_id, sku)` y `vehicles_company_placa_key (company_id, placa)` (Jean Pool)
+- Tabla `invoice_series (company_id, serie, last_number, PK(company_id, serie))` y correlativo atómico por empresa y serie mediante `INSERT ... ON CONFLICT DO UPDATE RETURNING last_number` (Jean Pool)
+- Requisito de `company_id` en JWT (`authenticate.js`); rechazo 401 si falta y exposición en `req.user.company_id` (Jean Pool)
+- Validación de estado de empresa en `auth.service.js`: rechazo 403 `COMPANY_INACTIVE` si la empresa está inactiva o suspendida (Jean Pool)
+- Aislamiento estricto por `company_id` en todos los services y controllers: `inventory`, `workorders`, `sales`, `invoicing`, `users` y `dashboard` (Jean Pool)
+- Los recursos de otra empresa devuelven HTTP 404 (no 403) para evitar revelación de existencia (Jean Pool)
+- Script de inicialización de empresa de pruebas `scripts/seed-test-company.js` (`npm run seed:test-company`) (Jean Pool)
+- Suite de pruebas automatizadas de aislamiento `scripts/test-isolation.js` (`npm run test:isolation`) que evalúa 12 casos de validación cruzada entre Empresa A y Empresa B (Jean Pool)
+- Documentación del orden de arranque e instalación en `Sistema/README.md` (Jean Pool)
+
 ### Added (Fase 11 - Tarea 11.1b)
 - Migración `scripts/migrations/002_categoria_producto.sql`: agrega columna `category VARCHAR(40)` e índice B-tree en tabla `products` (Jean Pool)
 - Constante `PRODUCT_CATEGORIES` con las 12 categorías oficiales del taller en `src/modules/inventory/inventory.service.js` (Jean Pool)

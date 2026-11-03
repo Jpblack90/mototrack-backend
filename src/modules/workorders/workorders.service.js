@@ -46,35 +46,36 @@ export const APPROVAL_THRESHOLD = 100;
  * @param {number} workOrderId
  * @param {string} message
  */
-async function notifyClient(workOrderId, message) {
-  console.log(`📩 [STUB] Notificación a cliente — OT #${workOrderId}: ${message}`);
+async function notifyClient(workOrderId, message, companyId) {
+  console.log(`📩 [STUB] Notificación a cliente — OT #${workOrderId} (Empresa ${companyId}): ${message}`);
 
   await pool.query(
-    `INSERT INTO notifications (work_order_id, message, channel)
-     VALUES ($1, $2, $3)`,
-    [workOrderId, message, 'stub']
+    `INSERT INTO notifications (company_id, work_order_id, message, channel)
+     VALUES ($1, $2, $3, $4)`,
+    [companyId, workOrderId, message, 'stub']
   );
 }
 
 // ─── Vehículos ────────────────────────────────────────────────────────────────
 
 /**
- * Busca un vehículo por placa.
+ * Busca un vehículo por placa dentro de la empresa.
  * - Si existe: actualiza con COALESCE los campos enviados y retorna el vehículo.
- * - Si no existe: lo crea y retorna el vehículo nuevo.
+ * - Si no existe: lo crea con su company_id y retorna el vehículo nuevo.
  *
  * @param {{ placa, brand, model, customer_name, customer_phone }} param0
+ * @param {number} companyId
  * @returns {object} vehicle row
  */
-export async function findOrCreateVehicle({ placa, brand, model, customer_name, customer_phone }) {
-  // Buscar por placa
+export async function findOrCreateVehicle({ placa, brand, model, customer_name, customer_phone }, companyId) {
+  // Buscar por placa y empresa
   const found = await pool.query(
-    `SELECT * FROM vehicles WHERE placa = $1`,
-    [placa]
+    `SELECT * FROM vehicles WHERE placa = $1 AND company_id = $2`,
+    [placa, companyId]
   );
 
   if (found.rows.length > 0) {
-    // Ya existe: actualizar campos no nulos con COALESCE
+    // Ya existe en esta empresa: actualizar campos no nulos con COALESCE
     const { rows } = await pool.query(
       `UPDATE vehicles
        SET
@@ -82,19 +83,19 @@ export async function findOrCreateVehicle({ placa, brand, model, customer_name, 
          model          = COALESCE($2, model),
          customer_name  = COALESCE($3, customer_name),
          customer_phone = COALESCE($4, customer_phone)
-       WHERE placa = $5
+       WHERE id = $5 AND company_id = $6
        RETURNING *`,
-      [brand ?? null, model ?? null, customer_name ?? null, customer_phone ?? null, placa]
+      [brand ?? null, model ?? null, customer_name ?? null, customer_phone ?? null, found.rows[0].id, companyId]
     );
     return rows[0];
   }
 
-  // No existe: crear
+  // No existe: crear vinculado a la empresa
   const { rows } = await pool.query(
-    `INSERT INTO vehicles (placa, brand, model, customer_name, customer_phone)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO vehicles (company_id, placa, brand, model, customer_name, customer_phone)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING *`,
-    [placa, brand ?? null, model ?? null, customer_name, customer_phone ?? null]
+    [companyId, placa, brand ?? null, model ?? null, customer_name, customer_phone ?? null]
   );
   return rows[0];
 }
@@ -103,14 +104,15 @@ export async function findOrCreateVehicle({ placa, brand, model, customer_name, 
 
 /**
  * Crea una nueva OT en estado 'recibido'.
- * Llama a findOrCreateVehicle internamente.
+ * Llama a findOrCreateVehicle internamente pasando companyId.
  *
  * Campos obligatorios: placa, customer_name, entry_mileage.
  *
  * @param {object} data
+ * @param {number} companyId
  * @throws {AppError} si falta algún campo obligatorio
  */
-export async function createWorkOrder(data) {
+export async function createWorkOrder(data, companyId) {
   const { placa, brand, model, customer_name, customer_phone, entry_mileage, checklist_notes } =
     data;
 
@@ -134,31 +136,29 @@ export async function createWorkOrder(data) {
     model,
     customer_name: customer_name.trim(),
     customer_phone,
-  });
+  }, companyId);
 
   const { rows } = await pool.query(
-    `INSERT INTO work_orders (vehicle_id, entry_mileage, checklist_notes)
-     VALUES ($1, $2, $3)
+    `INSERT INTO work_orders (company_id, vehicle_id, entry_mileage, checklist_notes)
+     VALUES ($1, $2, $3, $4)
      RETURNING *`,
-    [vehicle.id, Number(entry_mileage), checklist_notes ?? null]
+    [companyId, vehicle.id, Number(entry_mileage), checklist_notes ?? null]
   );
 
   return { ...rows[0], vehicle };
 }
 
 /**
- * Lista todas las OT con datos del vehículo asociado.
+ * Lista todas las OT de la empresa con datos del vehículo asociado.
  * Filtra por status si se envía.
  *
  * @param {{ status?: string }} options
+ * @param {number}             companyId
  */
-export async function getAll({ status } = {}) {
+export async function getAll({ status } = {}, companyId) {
   let query;
   let params;
 
-  // RETROFIT Fase 6: LEFT JOIN a users para traer el nombre real del mecánico
-  // La columna work_orders.mechanic_name queda en la BD pero se reemplaza en la
-  // respuesta por el nombre del usuario vinculado (u.name AS mechanic_name).
   if (status && status.trim() !== '') {
     query = `
       SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone,
@@ -166,10 +166,10 @@ export async function getAll({ status } = {}) {
       FROM   work_orders wo
       JOIN   vehicles    v  ON v.id  = wo.vehicle_id
       LEFT JOIN users    u  ON u.id  = wo.mechanic_id
-      WHERE  wo.status = $1
+      WHERE  wo.company_id = $1 AND wo.status = $2
       ORDER  BY wo.id ASC
     `;
-    params = [status.trim()];
+    params = [companyId, status.trim()];
   } else {
     query = `
       SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone,
@@ -177,9 +177,10 @@ export async function getAll({ status } = {}) {
       FROM   work_orders wo
       JOIN   vehicles    v  ON v.id  = wo.vehicle_id
       LEFT JOIN users    u  ON u.id  = wo.mechanic_id
+      WHERE  wo.company_id = $1
       ORDER  BY wo.id ASC
     `;
-    params = [];
+    params = [companyId];
   }
 
   const { rows } = await pool.query(query, params);
@@ -187,64 +188,70 @@ export async function getAll({ status } = {}) {
 }
 
 /**
- * Retorna una OT por id con datos del vehículo.
+ * Retorna una OT por id con datos del vehículo, validando pertenencia a la empresa.
  * @param {number|string} id
+ * @param {number}        companyId
  * @returns {object|null}
  */
-export async function getById(id) {
+export async function getById(id, companyId) {
   const { rows } = await pool.query(
-    // RETROFIT Fase 6: LEFT JOIN a users para nombre real del mecánico
     `SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone,
             u.name AS mechanic_name
      FROM   work_orders wo
      JOIN   vehicles    v  ON v.id = wo.vehicle_id
      LEFT JOIN users    u  ON u.id = wo.mechanic_id
-     WHERE  wo.id = $1`,
-    [id]
+     WHERE  wo.id = $1 AND wo.company_id = $2`,
+    [id, companyId]
   );
   return rows[0] ?? null;
 }
 
 /**
- * RF-14: historial de OT de un vehículo, ordenado de más reciente a más antiguo.
+ * RF-14: historial de OT de un vehículo por placa, dentro de la misma empresa.
  * @param {string} placa
+ * @param {number} companyId
  * @returns {object[]}
  */
-export async function getHistoryByPlaca(placa) {
+export async function getHistoryByPlaca(placa, companyId) {
   const { rows } = await pool.query(
-    // RETROFIT Fase 6: LEFT JOIN a users para nombre real del mecánico
     `SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone,
             u.name AS mechanic_name
      FROM   work_orders wo
      JOIN   vehicles    v  ON v.id = wo.vehicle_id
      LEFT JOIN users    u  ON u.id = wo.mechanic_id
-     WHERE  v.placa = $1
+     WHERE  v.placa = $1 AND v.company_id = $2 AND wo.company_id = $2
      ORDER  BY wo.created_at DESC`,
-    [placa.trim().toUpperCase()]
+    [placa.trim().toUpperCase(), companyId]
   );
   return rows;
 }
 
 /**
- * RETROFIT Fase 6: asigna un mecánico real a una OT.
- * La firma cambió de mechanic_name (texto libre) a mechanic_id (FK a users).
- * La columna work_orders.mechanic_name sigue en la BD pero ya no se actualiza aquí.
+ * Asigna un mecánico real a una OT.
+ * Valida que la OT y el mecánico pertenezcan a la misma empresa.
  *
  * @param {number|string} id           ID de la OT
  * @param {number|string} mechanic_id  ID del usuario con role='mecanico'
+ * @param {number}        companyId
  */
-export async function assignMechanic(id, mechanic_id) {
-  // Validar que el usuario existe, tiene role='mecanico' y está activo
+export async function assignMechanic(id, mechanic_id, companyId) {
+  // Validar que la OT existe y pertenece a la empresa
+  const order = await getById(id, companyId);
+  if (!order) {
+    throw new AppError(`Orden de trabajo #${id} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
+  }
+
+  // Validar que el mecánico existe en la misma empresa, tiene role='mecanico' y está activo
   const { rows: userRows } = await pool.query(
-    `SELECT id, name, role, is_active FROM users WHERE id = $1`,
-    [mechanic_id]
+    `SELECT id, name, role, is_active FROM users WHERE id = $1 AND company_id = $2`,
+    [mechanic_id, companyId]
   );
 
   if (!userRows[0] || !userRows[0].is_active) {
     throw new AppError(
       `No existe un mecánico activo con id ${mechanic_id}.`,
-      'INVALID_MECHANIC',
-      422
+      'MECHANIC_NOT_FOUND',
+      404
     );
   }
   if (userRows[0].role !== 'mecanico') {
@@ -258,9 +265,9 @@ export async function assignMechanic(id, mechanic_id) {
   const { rows } = await pool.query(
     `UPDATE work_orders
      SET mechanic_id = $1, updated_at = NOW()
-     WHERE id = $2
+     WHERE id = $2 AND company_id = $3
      RETURNING *`,
-    [mechanic_id, id]
+    [mechanic_id, id, companyId]
   );
   return rows[0] ?? null;
 }
@@ -268,18 +275,14 @@ export async function assignMechanic(id, mechanic_id) {
 /**
  * Actualiza el estado de una OT aplicando la máquina de estados.
  *
- * Reglas especiales:
- *   - Si diagnostico → en_reparacion Y additional_cost > APPROVAL_THRESHOLD:
- *     el estado real se desvía a 'pendiente_aprobacion' (RF-16 / UC-03 FA-1).
- *   - Si el nuevo estado es 'terminado', se rellena terminado_at (RF-17).
- *
  * @param {number|string} id
  * @param {string}        newStatus
  * @param {{ diagnosis_notes?: string, additional_cost?: number }} extras
+ * @param {number}        companyId
  */
-export async function updateStatus(id, newStatus, { diagnosis_notes, additional_cost } = {}) {
-  // a) Verificar que la OT existe
-  const current = await getById(id);
+export async function updateStatus(id, newStatus, { diagnosis_notes, additional_cost } = {}, companyId) {
+  // a) Verificar que la OT existe en la empresa
+  const current = await getById(id, companyId);
   if (!current) {
     throw new AppError(`Orden de trabajo #${id} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
   }
@@ -322,7 +325,7 @@ export async function updateStatus(id, newStatus, { diagnosis_notes, additional_
        additional_cost = COALESCE($3, additional_cost),
        terminado_at    = CASE WHEN $4 THEN NOW() ELSE terminado_at END,
        updated_at      = NOW()
-     WHERE id = $5
+     WHERE id = $5 AND company_id = $6
      RETURNING *`,
     [
       resolvedStatus,
@@ -330,6 +333,7 @@ export async function updateStatus(id, newStatus, { diagnosis_notes, additional_
       additional_cost != null ? Number(additional_cost) : null,
       isTerminado,
       id,
+      companyId,
     ]
   );
 
@@ -345,7 +349,7 @@ export async function updateStatus(id, newStatus, { diagnosis_notes, additional_
     notificationMsg = `El estado de su OT ha cambiado a: ${resolvedStatus}.`;
   }
 
-  await notifyClient(id, notificationMsg);
+  await notifyClient(id, notificationMsg, companyId);
 
   return { ...updated, requiresApproval };
 }
@@ -356,9 +360,10 @@ export async function updateStatus(id, newStatus, { diagnosis_notes, additional_
  * Mueve a 'en_reparacion'.
  *
  * @param {number|string} id
+ * @param {number}        companyId
  */
-export async function approveAdditionalWork(id) {
-  const current = await getById(id);
+export async function approveAdditionalWork(id, companyId) {
+  const current = await getById(id, companyId);
   if (!current) {
     throw new AppError(`Orden de trabajo #${id} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
   }
@@ -373,12 +378,12 @@ export async function approveAdditionalWork(id) {
   const { rows } = await pool.query(
     `UPDATE work_orders
      SET status = 'en_reparacion', updated_at = NOW()
-     WHERE id = $1
+     WHERE id = $1 AND company_id = $2
      RETURNING *`,
-    [id]
+    [id, companyId]
   );
 
-  await notifyClient(id, 'El cliente aprobó el trabajo adicional. La reparación ha comenzado.');
+  await notifyClient(id, 'El cliente aprobó el trabajo adicional. La reparación ha comenzado.', companyId);
   return rows[0];
 }
 
@@ -388,9 +393,10 @@ export async function approveAdditionalWork(id) {
  * Mueve a 'entregado' (cierre parcial).
  *
  * @param {number|string} id
+ * @param {number}        companyId
  */
-export async function rejectAdditionalWork(id) {
-  const current = await getById(id);
+export async function rejectAdditionalWork(id, companyId) {
+  const current = await getById(id, companyId);
   if (!current) {
     throw new AppError(`Orden de trabajo #${id} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
   }
@@ -405,14 +411,15 @@ export async function rejectAdditionalWork(id) {
   const { rows } = await pool.query(
     `UPDATE work_orders
      SET status = 'entregado', updated_at = NOW()
-     WHERE id = $1
+     WHERE id = $1 AND company_id = $2
      RETURNING *`,
-    [id]
+    [id, companyId]
   );
 
   await notifyClient(
     id,
-    'El cliente rechazó el trabajo adicional. El vehículo será devuelto con el diagnóstico realizado.'
+    'El cliente rechazó el trabajo adicional. El vehículo será devuelto con el diagnóstico realizado.',
+    companyId
   );
   return rows[0];
 }
@@ -421,15 +428,11 @@ export async function rejectAdditionalWork(id) {
  * Marca una OT como 'no_recogido'.
  * Solo válido si status === 'terminado'.
  *
- * ⚠️  VERIFICACIÓN MANUAL por ahora.
- *   La revisión automática por plazo vencido (cron job que corra a medianoche
- *   y mueva todas las OT 'terminado' con más de X días a 'no_recogido') queda
- *   para una fase de infraestructura futura. No se implementa hoy.
- *
  * @param {number|string} id
+ * @param {number}        companyId
  */
-export async function markNotPickedUp(id) {
-  const current = await getById(id);
+export async function markNotPickedUp(id, companyId) {
+  const current = await getById(id, companyId);
   if (!current) {
     throw new AppError(`Orden de trabajo #${id} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
   }
@@ -444,11 +447,10 @@ export async function markNotPickedUp(id) {
   const { rows } = await pool.query(
     `UPDATE work_orders
      SET status = 'no_recogido', updated_at = NOW()
-     WHERE id = $1
+     WHERE id = $1 AND company_id = $2
      RETURNING *`,
-    [id]
+    [id, companyId]
   );
 
-  // No se dispara notifyClient aquí: el cliente no recoge, la tienda decide si contactar
   return rows[0];
 }

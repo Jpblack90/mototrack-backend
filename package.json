@@ -9,7 +9,9 @@
     "start": "node server.js",
     "migrate": "node scripts/migrate.js",
     "seed:admin": "node scripts/seed-admin.js",
-    "seed:demo": "node scripts/seed-demo-users.js"
+    "seed:demo": "node scripts/seed-demo-users.js",
+    "seed:test-company": "node scripts/seed-test-company.js",
+    "test:isolation": "node scripts/test-isolation.js"
   },
   "keywords": [
     "mototrack",

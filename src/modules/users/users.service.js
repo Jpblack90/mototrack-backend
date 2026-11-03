@@ -13,10 +13,12 @@ class AppError extends Error {
 }
 
 /**
- * Crea un nuevo usuario. Solo el Administrador puede llamar a este servicio.
+ * Crea un nuevo usuario para la empresa. Solo el Administrador puede llamar a este servicio.
  * Hashea el password con bcrypt antes de insertar.
+ * @param {object} data
+ * @param {number} companyId
  */
-export async function create({ name, email, password, role }) {
+export async function create({ name, email, password, role }, companyId) {
   if (!name || !email || !password || !role) {
     throw new AppError('name, email, password y role son obligatorios.', 'MISSING_FIELD', 422);
   }
@@ -32,10 +34,10 @@ export async function create({ name, email, password, role }) {
 
   try {
     const { rows } = await pool.query(
-      `INSERT INTO users (name, email, password_hash, role)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO users (company_id, name, email, password_hash, role)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING id, name, email, role, is_active, created_at`,
-      [name.trim(), email.trim().toLowerCase(), password_hash, role]
+      [companyId, name.trim(), email.trim().toLowerCase(), password_hash, role]
     );
     return rows[0];
   } catch (err) {
@@ -48,34 +50,43 @@ export async function create({ name, email, password, role }) {
 }
 
 /**
- * Lista todos los usuarios sin exponer password_hash.
+ * Lista todos los usuarios de la empresa sin exponer password_hash.
+ * @param {number} companyId
  */
-export async function getAll() {
+export async function getAll(companyId) {
   const { rows } = await pool.query(
     `SELECT id, name, email, role, is_active, created_at, updated_at
      FROM   users
-     ORDER  BY id ASC`
+     WHERE  company_id = $1
+     ORDER  BY id ASC`,
+    [companyId]
   );
   return rows;
 }
 
 /**
- * Retorna un usuario por id sin exponer password_hash.
+ * Retorna un usuario por id y empresa sin exponer password_hash.
+ * @param {number|string} id
+ * @param {number} companyId
  */
-export async function getById(id) {
+export async function getById(id, companyId) {
   const { rows } = await pool.query(
     `SELECT id, name, email, role, is_active, created_at, updated_at
-     FROM   users WHERE id = $1`,
-    [id]
+     FROM   users
+     WHERE  id = $1 AND company_id = $2`,
+    [id, companyId]
   );
   return rows[0] ?? null;
 }
 
 /**
- * Actualiza name, role y/o is_active con COALESCE.
+ * Actualiza name, role y/o is_active con COALESCE para la empresa dada.
  * No permite cambiar email ni password aquí.
+ * @param {number|string} id
+ * @param {object} data
+ * @param {number} companyId
  */
-export async function update(id, { name, role, is_active }) {
+export async function update(id, { name, role, is_active }, companyId) {
   if (role && !VALID_ROLES.includes(role)) {
     throw new AppError(
       `"role" debe ser uno de: ${VALID_ROLES.join(', ')}.`,
@@ -91,9 +102,9 @@ export async function update(id, { name, role, is_active }) {
        role       = COALESCE($2, role),
        is_active  = COALESCE($3, is_active),
        updated_at = NOW()
-     WHERE id = $4
+     WHERE id = $4 AND company_id = $5
      RETURNING id, name, email, role, is_active, updated_at`,
-    [name ?? null, role ?? null, is_active ?? null, id]
+    [name ?? null, role ?? null, is_active ?? null, id, companyId]
   );
 
   if (!rows[0]) throw new AppError(`Usuario #${id} no encontrado.`, 'USER_NOT_FOUND', 404);
@@ -101,12 +112,15 @@ export async function update(id, { name, role, is_active }) {
 }
 
 /**
- * Soft-delete: is_active = false.
+ * Soft-delete: is_active = false en la empresa dada.
+ * @param {number|string} id
+ * @param {number} companyId
  */
-export async function remove(id) {
+export async function remove(id, companyId) {
   const { rowCount } = await pool.query(
-    `UPDATE users SET is_active = false, updated_at = NOW() WHERE id = $1 AND is_active = true`,
-    [id]
+    `UPDATE users SET is_active = false, updated_at = NOW()
+     WHERE id = $1 AND company_id = $2 AND is_active = true`,
+    [id, companyId]
   );
   return rowCount > 0;
 }

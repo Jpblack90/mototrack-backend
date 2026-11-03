@@ -16,6 +16,7 @@ function httpStatusFromCode(code) {
   const map = {
     WORK_ORDER_NOT_FOUND: 404,
     VEHICLE_NOT_FOUND:    404,
+    MECHANIC_NOT_FOUND:   404,
     INVALID_TRANSITION:   422,
     MISSING_FIELD:        422,
     INVALID_FIELD:        422,
@@ -31,7 +32,7 @@ function httpStatusFromCode(code) {
  */
 export async function getHistoryByPlaca(req, res, next) {
   try {
-    const history = await svc.getHistoryByPlaca(req.params.placa);
+    const history = await svc.getHistoryByPlaca(req.params.placa, req.user.company_id);
     ok(res, history);
   } catch (err) {
     next(err);
@@ -45,7 +46,7 @@ export async function getHistoryByPlaca(req, res, next) {
 export async function getAllOrders(req, res, next) {
   try {
     const { status } = req.query;
-    const orders = await svc.getAll({ status });
+    const orders = await svc.getAll({ status }, req.user.company_id);
     ok(res, orders);
   } catch (err) {
     next(err);
@@ -57,7 +58,7 @@ export async function getAllOrders(req, res, next) {
  */
 export async function getOrder(req, res, next) {
   try {
-    const order = await svc.getById(req.params.id);
+    const order = await svc.getById(req.params.id, req.user.company_id);
     if (!order) return fail(res, `Orden de trabajo #${req.params.id} no encontrada.`, 404);
     ok(res, order);
   } catch (err) {
@@ -70,7 +71,7 @@ export async function getOrder(req, res, next) {
  */
 export async function createOrder(req, res, next) {
   try {
-    const newOrder = await svc.createWorkOrder(req.body);
+    const newOrder = await svc.createWorkOrder(req.body, req.user.company_id);
     ok(res, newOrder, 201);
   } catch (err) {
     if (err.code) return fail(res, err.message, httpStatusFromCode(err.code));
@@ -89,7 +90,7 @@ export async function assignMechanic(req, res, next) {
     if (!mechanic_id) {
       return fail(res, '"mechanic_id" es obligatorio en el body.', 422);
     }
-    const updated = await svc.assignMechanic(req.params.id, mechanic_id);
+    const updated = await svc.assignMechanic(req.params.id, mechanic_id, req.user.company_id);
     if (!updated) return fail(res, `Orden de trabajo #${req.params.id} no encontrada.`, 404);
     ok(res, updated);
   } catch (err) {
@@ -108,10 +109,15 @@ export async function updateStatus(req, res, next) {
     if (!status || String(status).trim() === '') {
       return fail(res, '"status" es obligatorio en el body.', 422);
     }
-    const result = await svc.updateStatus(req.params.id, status.trim(), {
-      diagnosis_notes,
-      additional_cost,
-    });
+    const result = await svc.updateStatus(
+      req.params.id,
+      status.trim(),
+      {
+        diagnosis_notes,
+        additional_cost,
+      },
+      req.user.company_id
+    );
     ok(res, result);
   } catch (err) {
     if (err.code) return fail(res, err.message, httpStatusFromCode(err.code));
@@ -124,7 +130,7 @@ export async function updateStatus(req, res, next) {
  */
 export async function approveAdditionalWork(req, res, next) {
   try {
-    const result = await svc.approveAdditionalWork(req.params.id);
+    const result = await svc.approveAdditionalWork(req.params.id, req.user.company_id);
     ok(res, result);
   } catch (err) {
     if (err.code) return fail(res, err.message, httpStatusFromCode(err.code));
@@ -137,7 +143,7 @@ export async function approveAdditionalWork(req, res, next) {
  */
 export async function rejectAdditionalWork(req, res, next) {
   try {
-    const result = await svc.rejectAdditionalWork(req.params.id);
+    const result = await svc.rejectAdditionalWork(req.params.id, req.user.company_id);
     ok(res, result);
   } catch (err) {
     if (err.code) return fail(res, err.message, httpStatusFromCode(err.code));
@@ -150,7 +156,7 @@ export async function rejectAdditionalWork(req, res, next) {
  */
 export async function markNotPickedUp(req, res, next) {
   try {
-    const result = await svc.markNotPickedUp(req.params.id);
+    const result = await svc.markNotPickedUp(req.params.id, req.user.company_id);
     ok(res, result);
   } catch (err) {
     if (err.code) return fail(res, err.message, httpStatusFromCode(err.code));

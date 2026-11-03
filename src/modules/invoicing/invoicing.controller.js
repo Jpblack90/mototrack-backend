@@ -27,7 +27,7 @@ function httpStatus(code) {
  */
 export async function getPendingContingency(req, res, next) {
   try {
-    const invoices = await svc.getPendingContingency();
+    const invoices = await svc.getPendingContingency(req.user.company_id);
     ok(res, invoices);
   } catch (err) {
     next(err);
@@ -41,7 +41,7 @@ export async function getPendingContingency(req, res, next) {
 export async function getAllInvoices(req, res, next) {
   try {
     const { estado } = req.query;
-    const invoices = await svc.getAll({ estado });
+    const invoices = await svc.getAll({ estado }, req.user.company_id);
     ok(res, invoices);
   } catch (err) {
     next(err);
@@ -53,7 +53,7 @@ export async function getAllInvoices(req, res, next) {
  */
 export async function getInvoice(req, res, next) {
   try {
-    const invoice = await svc.getById(req.params.id);
+    const invoice = await svc.getById(req.params.id, req.user.company_id);
     if (!invoice) return fail(res, `Invoice #${req.params.id} no encontrado.`, 404);
     ok(res, invoice);
   } catch (err) {
@@ -66,7 +66,7 @@ export async function getInvoice(req, res, next) {
  */
 export async function getStatus(req, res, next) {
   try {
-    const status = await svc.getStatus(req.params.id);
+    const status = await svc.getStatus(req.params.id, req.user.company_id);
     ok(res, status);
   } catch (err) {
     if (err.code) return fail(res, err.message, httpStatus(err.code));
@@ -79,7 +79,7 @@ export async function getStatus(req, res, next) {
  */
 export async function getTicketData(req, res, next) {
   try {
-    const ticket = await svc.getTicketData(req.params.id);
+    const ticket = await svc.getTicketData(req.params.id, req.user.company_id);
     ok(res, ticket);
   } catch (err) {
     if (err.code) return fail(res, err.message, httpStatus(err.code));
@@ -93,7 +93,7 @@ export async function getTicketData(req, res, next) {
  */
 export async function createInvoice(req, res, next) {
   try {
-    const invoice = await svc.createInvoice(req.body);
+    const invoice = await svc.createInvoice(req.body, req.user.company_id);
     // Si ya existía (idempotencia RF-29), responder 200 no 201
     const httpCode = invoice.alreadyExists ? 200 : 201;
     ok(res, invoice, httpCode);
@@ -108,7 +108,7 @@ export async function createInvoice(req, res, next) {
  */
 export async function retryContingency(req, res, next) {
   try {
-    const invoice = await svc.retryContingency(req.params.id);
+    const invoice = await svc.retryContingency(req.params.id, req.user.company_id);
     ok(res, invoice);
   } catch (err) {
     if (err.code) return fail(res, err.message, httpStatus(err.code));

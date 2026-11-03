@@ -98,6 +98,7 @@ function escapeXml(str) {
  * 'contingency' y la función retorna éxito igual (no es un error 500).
  *
  * @param {{ sale_id, comprobante_type, customer_document_type, customer_document_number, simulatePseDown }} param
+ * @param {number} companyId
  */
 export async function createInvoice({
   sale_id,
@@ -105,98 +106,131 @@ export async function createInvoice({
   customer_document_type,
   customer_document_number,
   simulatePseDown = false,
-}) {
+}, companyId) {
   // Validaciones previas
   if (!sale_id) throw new AppError('"sale_id" es obligatorio.', 'MISSING_FIELD', 422);
   if (!comprobante_type) throw new AppError('"comprobante_type" es obligatorio.', 'MISSING_FIELD', 422);
 
-  // a) Buscar la venta con sus ítems expandidos
-  const { rows: saleRows } = await pool.query(
-    `SELECT * FROM sales WHERE id = $1`,
-    [sale_id]
-  );
-  if (!saleRows[0]) {
-    throw new AppError(`Venta con id ${sale_id} no encontrada.`, 'SALE_NOT_FOUND', 404);
-  }
-  const sale = saleRows[0];
-
-  if (sale.status === 'voided') {
-    throw new AppError(
-      `No se puede emitir comprobante para la venta #${sale_id} porque está anulada.`,
-      'CANNOT_INVOICE_VOIDED_SALE',
-      422
-    );
-  }
-
-  // b) RF-29: verificar idempotencia — ya existe un invoice para este sale_id
-  const { rows: existing } = await pool.query(
-    `SELECT * FROM invoices WHERE sale_id = $1`,
-    [sale_id]
-  );
-  if (existing[0]) {
-    return { ...existing[0], alreadyExists: true };
-  }
-
-  // Traer ítems de la venta expandidos para el XML
-  const { rows: saleItems } = await pool.query(
-    `SELECT
-       si.quantity, si.unit_price, si.subtotal,
-       p.name AS product_name,
-       k.name AS kit_name
-     FROM   sale_items si
-     LEFT JOIN products p ON p.id = si.product_id
-     LEFT JOIN kits     k ON k.id = si.kit_id
-     WHERE  si.sale_id = $1`,
-    [sale_id]
-  );
-  sale.items = saleItems;
-
-  // Determinar serie por tipo de comprobante
+  const client = await pool.connect();
+  let invoice;
+  let sale;
   const serie = comprobante_type === 'factura' ? 'F001' : 'B001';
 
-  // c) Insertar el invoice con estado='pending'
-  const { rows: invoiceRows } = await pool.query(
-    `INSERT INTO invoices
-       (sale_id, comprobante_type, serie, customer_document_type,
-        customer_document_number, estado)
-     VALUES ($1, $2, $3, $4, $5, 'pending')
-     RETURNING *`,
-    [
-      sale_id,
+  try {
+    await client.query('BEGIN');
+
+    // a) Buscar la venta con company_id
+    const { rows: saleRows } = await client.query(
+      `SELECT * FROM sales WHERE id = $1 AND company_id = $2`,
+      [sale_id, companyId]
+    );
+    if (!saleRows[0]) {
+      throw new AppError(`Venta con id ${sale_id} no encontrada.`, 'SALE_NOT_FOUND', 404);
+    }
+    sale = saleRows[0];
+
+    if (sale.status === 'voided') {
+      throw new AppError(
+        `No se puede emitir comprobante para la venta #${sale_id} porque está anulada.`,
+        'CANNOT_INVOICE_VOIDED_SALE',
+        422
+      );
+    }
+
+    // b) RF-29: verificar idempotencia — ya existe un invoice para este sale_id en la empresa
+    const { rows: existing } = await client.query(
+      `SELECT * FROM invoices WHERE sale_id = $1 AND company_id = $2`,
+      [sale_id, companyId]
+    );
+    if (existing[0]) {
+      await client.query('COMMIT');
+      return { ...existing[0], alreadyExists: true };
+    }
+
+    // Traer ítems de la venta expandidos para el XML
+    const { rows: saleItems } = await client.query(
+      `SELECT
+         si.quantity, si.unit_price, si.subtotal,
+         p.name AS product_name,
+         k.name AS kit_name
+       FROM   sale_items si
+       LEFT JOIN products p ON p.id = si.product_id
+       LEFT JOIN kits     k ON k.id = si.kit_id
+       WHERE  si.sale_id = $1`,
+      [sale_id]
+    );
+    sale.items = saleItems;
+
+    // Obtener correlativo atómico por empresa y serie
+    const { rows: seriesRows } = await client.query(
+      `INSERT INTO invoice_series (company_id, serie, last_number)
+       VALUES ($1, $2, 1)
+       ON CONFLICT (company_id, serie)
+       DO UPDATE SET last_number = invoice_series.last_number + 1
+       RETURNING last_number`,
+      [companyId, serie]
+    );
+    const numero = seriesRows[0].last_number;
+
+    // c) Insertar el invoice con numero y estado='pending'
+    const { rows: invoiceRows } = await client.query(
+      `INSERT INTO invoices
+         (company_id, sale_id, comprobante_type, serie, numero, customer_document_type,
+          customer_document_number, estado)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+       RETURNING *`,
+      [
+        companyId,
+        sale_id,
+        comprobante_type,
+        serie,
+        numero,
+        customer_document_type ?? null,
+        customer_document_number ?? null,
+      ]
+    );
+    invoice = invoiceRows[0];
+
+    // Construir XML con el número correlativo ya asignado
+    const xml = buildSimplifiedXml(sale, {
       comprobante_type,
       serie,
-      customer_document_type ?? null,
-      customer_document_number ?? null,
-    ]
-  );
-  let invoice = invoiceRows[0];
+      numero: invoice.numero,
+      customer_document_type,
+      customer_document_number,
+    });
 
-  // Construir XML con el número correlativo ya asignado
-  const xml = buildSimplifiedXml(sale, {
-    comprobante_type,
-    serie,
-    numero: invoice.numero,
-    customer_document_type,
-    customer_document_number,
-  });
+    // Guardar el XML en la fila
+    await client.query(
+      `UPDATE invoices SET xml_content = $1, updated_at = NOW() WHERE id = $2 AND company_id = $3`,
+      [xml, invoice.id, companyId]
+    );
 
-  // Guardar el XML en la fila
-  await pool.query(
-    `UPDATE invoices SET xml_content = $1, updated_at = NOW() WHERE id = $2`,
-    [xml, invoice.id]
-  );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 
-  // d) Enviar al PSE simulado
+  // d) Enviar al PSE simulado (fuera de la transacción del correlativo)
   let updatedInvoice;
   try {
-    const pseResult = await sendComprobante({ xml, simulatePseDown });
+    const pseResult = await sendComprobante({ xml: invoice.xml_content || buildSimplifiedXml(sale, {
+      comprobante_type,
+      serie,
+      numero: invoice.numero,
+      customer_document_type,
+      customer_document_number,
+    }), simulatePseDown });
 
     const { rows } = await pool.query(
       `UPDATE invoices
        SET estado = 'accepted', cdr_response = $1, is_contingency = false, updated_at = NOW()
-       WHERE id = $2
+       WHERE id = $2 AND company_id = $3
        RETURNING *`,
-      [JSON.stringify(pseResult.cdr), invoice.id]
+      [JSON.stringify(pseResult.cdr), invoice.id, companyId]
     );
     updatedInvoice = rows[0];
 
@@ -207,9 +241,9 @@ export async function createInvoice({
         `UPDATE invoices
          SET estado = 'contingency', is_contingency = true,
              cdr_response = $1, updated_at = NOW()
-         WHERE id = $2
+         WHERE id = $2 AND company_id = $3
          RETURNING *`,
-        [JSON.stringify({ error: pseErr.message }), invoice.id]
+        [JSON.stringify({ error: pseErr.message }), invoice.id, companyId]
       );
       updatedInvoice = rows[0];
     } else {
@@ -222,13 +256,14 @@ export async function createInvoice({
 }
 
 /**
- * Reintenta el envío al PSE de un comprobante en contingencia.
+ * Reintenta el envío al PSE de un comprobante en contingencia para la empresa especificada.
  * @param {number|string} id  ID del invoice
+ * @param {number} companyId
  */
-export async function retryContingency(id) {
+export async function retryContingency(id, companyId) {
   const { rows } = await pool.query(
-    `SELECT * FROM invoices WHERE id = $1`,
-    [id]
+    `SELECT * FROM invoices WHERE id = $1 AND company_id = $2`,
+    [id, companyId]
   );
   if (!rows[0]) {
     throw new AppError(`Invoice #${id} no encontrado.`, 'INVOICE_NOT_FOUND', 404);
@@ -251,9 +286,9 @@ export async function retryContingency(id) {
     const { rows: updated } = await pool.query(
       `UPDATE invoices
        SET estado = 'accepted', cdr_response = $1, is_contingency = false, updated_at = NOW()
-       WHERE id = $2
+       WHERE id = $2 AND company_id = $3
        RETURNING *`,
-      [JSON.stringify(pseResult.cdr), id]
+      [JSON.stringify(pseResult.cdr), id, companyId]
     );
     updatedInvoice = updated[0];
 
@@ -263,9 +298,9 @@ export async function retryContingency(id) {
       const { rows: updated } = await pool.query(
         `UPDATE invoices
          SET cdr_response = $1, updated_at = NOW()
-         WHERE id = $2
+         WHERE id = $2 AND company_id = $3
          RETURNING *`,
-        [JSON.stringify({ error: pseErr.message, retried_at: new Date().toISOString() }), id]
+        [JSON.stringify({ error: pseErr.message, retried_at: new Date().toISOString() }), id, companyId]
       );
       updatedInvoice = updated[0];
     } else {
@@ -277,16 +312,17 @@ export async function retryContingency(id) {
 }
 
 /**
- * Lista todos los comprobantes en estado 'contingency'.
- * Útil para un proceso de reintento en lote (cron job futuro).
+ * Lista todos los comprobantes en estado 'contingency' para la empresa.
+ * @param {number} companyId
  */
-export async function getPendingContingency() {
+export async function getPendingContingency(companyId) {
   const { rows } = await pool.query(
     `SELECT i.*, s.total AS sale_total, s.customer_name
      FROM   invoices i
      JOIN   sales    s ON s.id = i.sale_id
-     WHERE  i.estado = 'contingency'
-     ORDER  BY i.created_at ASC`
+     WHERE  i.company_id = $1 AND i.estado = 'contingency'
+     ORDER  BY i.created_at ASC`,
+    [companyId]
   );
   return rows;
 }
@@ -294,11 +330,12 @@ export async function getPendingContingency() {
 /**
  * RF-30: retorna solo el estado del comprobante.
  * @param {number|string} id
+ * @param {number} companyId
  */
-export async function getStatus(id) {
+export async function getStatus(id, companyId) {
   const { rows } = await pool.query(
-    `SELECT id, estado, is_contingency FROM invoices WHERE id = $1`,
-    [id]
+    `SELECT id, estado, is_contingency FROM invoices WHERE id = $1 AND company_id = $2`,
+    [id, companyId]
   );
   if (!rows[0]) throw new AppError(`Invoice #${id} no encontrado.`, 'INVOICE_NOT_FOUND', 404);
   return rows[0];
@@ -307,24 +344,26 @@ export async function getStatus(id) {
 /**
  * Retorna un invoice por id con join a sales.
  * @param {number|string} id
+ * @param {number} companyId
  */
-export async function getById(id) {
+export async function getById(id, companyId) {
   const { rows } = await pool.query(
     `SELECT i.*, s.total AS sale_total, s.subtotal AS sale_subtotal,
             s.igv AS sale_igv, s.customer_name, s.payment_method
      FROM   invoices i
      JOIN   sales    s ON s.id = i.sale_id
-     WHERE  i.id = $1`,
-    [id]
+     WHERE  i.id = $1 AND i.company_id = $2`,
+    [id, companyId]
   );
   return rows[0] ?? null;
 }
 
 /**
- * Lista todos los comprobantes. Filtra por estado si se envía.
+ * Lista todos los comprobantes de la empresa. Filtra por estado si se envía.
  * @param {{ estado?: string }} options
+ * @param {number} companyId
  */
-export async function getAll({ estado } = {}) {
+export async function getAll({ estado } = {}, companyId) {
   let query;
   let params;
 
@@ -333,18 +372,19 @@ export async function getAll({ estado } = {}) {
       SELECT i.*, s.total AS sale_total, s.customer_name
       FROM   invoices i
       JOIN   sales    s ON s.id = i.sale_id
-      WHERE  i.estado = $1
+      WHERE  i.company_id = $1 AND i.estado = $2
       ORDER  BY i.id ASC
     `;
-    params = [estado.trim()];
+    params = [companyId, estado.trim()];
   } else {
     query = `
       SELECT i.*, s.total AS sale_total, s.customer_name
       FROM   invoices i
       JOIN   sales    s ON s.id = i.sale_id
+      WHERE  i.company_id = $1
       ORDER  BY i.id ASC
     `;
-    params = [];
+    params = [companyId];
   }
 
   const { rows } = await pool.query(query, params);
@@ -352,23 +392,18 @@ export async function getAll({ estado } = {}) {
 }
 
 /**
- * Retorna los datos estructurados del ticket, listos para que el FRONTEND
- * arme e imprima el comprobante físico o en PDF.
- *
- * ── Listo para consumir desde la futura pantalla de impresión ──
- *    El backend solo prepara los datos; la impresión/renderizado ocurre
- *    en el cliente (React Web o React Native) en la Fase 7/8.
- *
+ * Retorna los datos estructurados del ticket para la empresa especificada.
  * @param {number|string} id  ID del invoice
+ * @param {number} companyId
  */
-export async function getTicketData(id) {
+export async function getTicketData(id, companyId) {
   const { rows: invRows } = await pool.query(
     `SELECT i.*, s.total, s.subtotal, s.igv, s.customer_name,
             s.payment_method, s.created_at AS sale_date
      FROM   invoices i
      JOIN   sales    s ON s.id = i.sale_id
-     WHERE  i.id = $1`,
-    [id]
+     WHERE  i.id = $1 AND i.company_id = $2`,
+    [id, companyId]
   );
   if (!invRows[0]) throw new AppError(`Invoice #${id} no encontrado.`, 'INVOICE_NOT_FOUND', 404);
   const inv = invRows[0];

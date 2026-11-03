@@ -19,7 +19,18 @@ export function authenticate(req, res, next) {
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = { id: payload.id, role: payload.role, name: payload.name };
+    if (!payload.company_id) {
+      return res.status(401).json({
+        success: false,
+        error: { message: 'Token sin empresa asignada. Por favor, inicia sesión nuevamente.' },
+      });
+    }
+    req.user = {
+      id: payload.id,
+      role: payload.role,
+      name: payload.name,
+      company_id: payload.company_id,
+    };
     next();
   } catch {
     return res.status(401).json({

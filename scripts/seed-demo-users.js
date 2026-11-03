@@ -43,6 +43,16 @@ async function seedDemoUsers() {
     client = await pool.connect();
     console.log('🌱  Iniciando seed de usuarios de demostración...\n');
 
+    // Obtener la empresa inicial
+    const { rows: companyRows } = await client.query(
+      `SELECT id FROM companies ORDER BY id LIMIT 1`
+    );
+    if (companyRows.length === 0) {
+      console.error('❌  Error: Ejecuta primero npm run migrate');
+      process.exit(1);
+    }
+    const companyId = companyRows[0].id;
+
     const passwordHash = await bcrypt.hash(DEMO_PASSWORD, SALT_ROUNDS);
 
     for (const u of DEMO_USERS) {
@@ -55,10 +65,10 @@ async function seedDemoUsers() {
         console.log(`ℹ️   Usuario "${u.email}" (${rows[0].role}) ya existe. Omitido.`);
       } else {
         const { rows: inserted } = await client.query(
-          `INSERT INTO users (name, email, password_hash, role)
-           VALUES ($1, $2, $3, $4)
-           RETURNING id, name, email, role;`,
-          [u.name, u.email, passwordHash, u.role]
+          `INSERT INTO users (company_id, name, email, password_hash, role)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, name, email, role, company_id;`,
+          [companyId, u.name, u.email, passwordHash, u.role]
         );
         console.log(`✅  Usuario creado: ${inserted[0].name} <${inserted[0].email}> [${inserted[0].role}]`);
       }

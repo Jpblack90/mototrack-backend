@@ -21,8 +21,9 @@ const IGV_RATE = 0.18;
  * Crea un kit y sus ítems componentes en una transacción.
  *
  * @param {{ name, description, kit_price, items: Array<{product_id, quantity}> }} data
+ * @param {number} companyId
  */
-export async function createKit({ name, description, kit_price, items }) {
+export async function createKit({ name, description, kit_price, items }, companyId) {
   if (!name || String(name).trim() === '') {
     throw new AppError('"name" es obligatorio para crear un kit.', 'MISSING_FIELD', 422);
   }
@@ -38,9 +39,9 @@ export async function createKit({ name, description, kit_price, items }) {
     await client.query('BEGIN');
 
     const { rows: kitRows } = await client.query(
-      `INSERT INTO kits (name, description, kit_price)
-       VALUES ($1, $2, $3) RETURNING *`,
-      [name.trim(), description ?? null, Number(kit_price)]
+      `INSERT INTO kits (company_id, name, description, kit_price)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [companyId, name.trim(), description ?? null, Number(kit_price)]
     );
     const kit = kitRows[0];
 
@@ -52,6 +53,19 @@ export async function createKit({ name, description, kit_price, items }) {
           422
         );
       }
+      // Validar que el producto pertenezca a la empresa
+      const { rows: prodRows } = await client.query(
+        `SELECT id FROM products WHERE id = $1 AND company_id = $2 AND is_active = true`,
+        [item.product_id, companyId]
+      );
+      if (!prodRows[0]) {
+        throw new AppError(
+          `Producto con id ${item.product_id} no encontrado o inactivo.`,
+          'PRODUCT_NOT_FOUND',
+          404
+        );
+      }
+
       await client.query(
         `INSERT INTO kit_items (kit_id, product_id, quantity)
          VALUES ($1, $2, $3)`,
@@ -71,10 +85,12 @@ export async function createKit({ name, description, kit_price, items }) {
 
 /**
  * Lista todos los kits activos con sus ítems expandidos (nombre del producto incluido).
+ * @param {number} companyId
  */
-export async function getAllKits() {
+export async function getAllKits(companyId) {
   const { rows: kits } = await pool.query(
-    `SELECT * FROM kits WHERE is_active = true ORDER BY id ASC`
+    `SELECT * FROM kits WHERE company_id = $1 AND is_active = true ORDER BY id ASC`,
+    [companyId]
   );
 
   // Para cada kit, trae sus componentes con nombre del producto
@@ -108,8 +124,9 @@ export async function getAllKits() {
  *   Si cualquier paso falla: ROLLBACK + release client.
  *
  * @param {{ customer_name, work_order_id, payment_method, items: Array }} data
+ * @param {number} companyId
  */
-export async function createSale({ customer_name, work_order_id, payment_method, items }) {
+export async function createSale({ customer_name, work_order_id, payment_method, items }, companyId) {
   // Validaciones previas a tocar la BD
   if (!payment_method || String(payment_method).trim() === '') {
     throw new AppError('"payment_method" es obligatorio.', 'MISSING_FIELD', 422);
@@ -153,11 +170,26 @@ export async function createSale({ customer_name, work_order_id, payment_method,
   try {
     await client.query('BEGIN');
 
+    // Validar orden de trabajo si fue especificada
+    if (work_order_id) {
+      const { rows: woRows } = await client.query(
+        `SELECT id FROM work_orders WHERE id = $1 AND company_id = $2`,
+        [work_order_id, companyId]
+      );
+      if (!woRows[0]) {
+        throw new AppError(
+          `Orden de trabajo #${work_order_id} no encontrada.`,
+          'WORK_ORDER_NOT_FOUND',
+          404
+        );
+      }
+    }
+
     // a) INSERT inicial en sales (totales en 0, se actualizan al final)
     const { rows: saleRows } = await client.query(
-      `INSERT INTO sales (customer_name, work_order_id, payment_method, subtotal, igv, total)
-       VALUES ($1, $2, $3, 0, 0, 0) RETURNING id`,
-      [customer_name ?? null, work_order_id ?? null, payment_method]
+      `INSERT INTO sales (company_id, customer_name, work_order_id, payment_method, subtotal, igv, total)
+       VALUES ($1, $2, $3, $4, 0, 0, 0) RETURNING id`,
+      [companyId, customer_name ?? null, work_order_id ?? null, payment_method]
     );
     const saleId = saleRows[0].id;
 
@@ -170,8 +202,8 @@ export async function createSale({ customer_name, work_order_id, payment_method,
       if (item.product_id != null) {
         // ── Producto directo ──────────────────────────────────────────────────
         const { rows: prodRows } = await client.query(
-          `SELECT id, name, sale_price FROM products WHERE id = $1 AND is_active = true`,
-          [item.product_id]
+          `SELECT id, name, sale_price FROM products WHERE id = $1 AND company_id = $2 AND is_active = true`,
+          [item.product_id, companyId]
         );
         if (!prodRows[0]) {
           throw new AppError(
@@ -182,7 +214,7 @@ export async function createSale({ customer_name, work_order_id, payment_method,
         }
         const product = prodRows[0];
 
-        await decrementStock(client, product.id, qty);
+        await decrementStock(client, product.id, qty, companyId);
 
         const unitPrice = Number(product.sale_price);
         const lineSubtotal = +(unitPrice * qty).toFixed(2);
@@ -198,8 +230,8 @@ export async function createSale({ customer_name, work_order_id, payment_method,
       } else {
         // ── Kit ───────────────────────────────────────────────────────────────
         const { rows: kitRows } = await client.query(
-          `SELECT * FROM kits WHERE id = $1 AND is_active = true`,
-          [item.kit_id]
+          `SELECT * FROM kits WHERE id = $1 AND company_id = $2 AND is_active = true`,
+          [item.kit_id, companyId]
         );
         if (!kitRows[0]) {
           throw new AppError(
@@ -225,7 +257,7 @@ export async function createSale({ customer_name, work_order_id, payment_method,
 
         // Descontar stock de cada componente
         for (const comp of components) {
-          await decrementStock(client, comp.product_id, comp.quantity * qty);
+          await decrementStock(client, comp.product_id, comp.quantity * qty, companyId);
         }
 
         // Una sola línea de sale_items por kit vendido
@@ -248,8 +280,8 @@ export async function createSale({ customer_name, work_order_id, payment_method,
 
     // d) Actualizar sales con los totales reales
     const { rows: updatedSale } = await client.query(
-      `UPDATE sales SET subtotal = $1, igv = $2, total = $3 WHERE id = $4 RETURNING *`,
-      [subtotalTotal.toFixed(2), igv, total, saleId]
+      `UPDATE sales SET subtotal = $1, igv = $2, total = $3 WHERE id = $4 AND company_id = $5 RETURNING *`,
+      [subtotalTotal.toFixed(2), igv, total, saleId, companyId]
     );
 
     await client.query('COMMIT');
@@ -264,19 +296,20 @@ export async function createSale({ customer_name, work_order_id, payment_method,
 }
 
 /**
- * Lista todas las ventas. Filtra por status si se envía.
+ * Lista todas las ventas de la empresa. Filtra por status si se envía.
  * @param {{ status?: string }} options
+ * @param {number} companyId
  */
-export async function getAll({ status } = {}) {
+export async function getAll({ status } = {}, companyId) {
   let query;
   let params;
 
   if (status && status.trim() !== '') {
-    query = `SELECT * FROM sales WHERE status = $1 ORDER BY id ASC`;
-    params = [status.trim()];
+    query = `SELECT * FROM sales WHERE company_id = $1 AND status = $2 ORDER BY id ASC`;
+    params = [companyId, status.trim()];
   } else {
-    query = `SELECT * FROM sales ORDER BY id ASC`;
-    params = [];
+    query = `SELECT * FROM sales WHERE company_id = $1 ORDER BY id ASC`;
+    params = [companyId];
   }
 
   const { rows } = await pool.query(query, params);
@@ -284,14 +317,15 @@ export async function getAll({ status } = {}) {
 }
 
 /**
- * Retorna una venta por id con sus ítems expandidos (nombre de producto/kit).
+ * Retorna una venta por id y empresa con sus ítems expandidos (nombre de producto/kit).
  * @param {number|string} id
+ * @param {number} companyId
  * @returns {object|null}
  */
-export async function getById(id) {
+export async function getById(id, companyId) {
   const { rows: saleRows } = await pool.query(
-    `SELECT * FROM sales WHERE id = $1`,
-    [id]
+    `SELECT * FROM sales WHERE id = $1 AND company_id = $2`,
+    [id, companyId]
   );
   if (!saleRows[0]) return null;
 
@@ -314,7 +348,7 @@ export async function getById(id) {
 }
 
 /**
- * Anula una venta y restaura el stock de todos sus ítems.
+ * Anula una venta y restaura el stock de todos sus ítems para la empresa especificada.
  *
  * ⚠️  NOTA FISCAL IMPORTANTE:
  *   Esta operación solo revierte el efecto contable/stock INTERNO del sistema.
@@ -324,8 +358,9 @@ export async function getById(id) {
  *
  * @param {number|string} id
  * @param {string}        void_reason  Motivo obligatorio de anulación
+ * @param {number}        companyId
  */
-export async function voidSale(id, void_reason) {
+export async function voidSale(id, void_reason, companyId) {
   if (!void_reason || String(void_reason).trim() === '') {
     throw new AppError('"void_reason" es obligatorio para anular una venta.', 'MISSING_FIELD', 422);
   }
@@ -334,10 +369,10 @@ export async function voidSale(id, void_reason) {
   try {
     await client.query('BEGIN');
 
-    // Verificar que la venta existe y no está ya anulada
+    // Verificar que la venta existe y pertenece a la empresa, y no está ya anulada
     const { rows: saleRows } = await client.query(
-      `SELECT * FROM sales WHERE id = $1 FOR UPDATE`,
-      [id]
+      `SELECT * FROM sales WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [id, companyId]
     );
     if (!saleRows[0]) {
       throw new AppError(`Venta con id ${id} no encontrada.`, 'SALE_NOT_FOUND', 404);
@@ -356,7 +391,7 @@ export async function voidSale(id, void_reason) {
     for (const item of saleItems) {
       if (item.product_id != null) {
         // Producto directo: restaurar qty
-        await restoreStock(client, item.product_id, item.quantity);
+        await restoreStock(client, item.product_id, item.quantity, companyId);
       } else if (item.kit_id != null) {
         // Kit: restaurar cada componente en la cantidad correspondiente
         const { rows: components } = await client.query(
@@ -364,7 +399,7 @@ export async function voidSale(id, void_reason) {
           [item.kit_id]
         );
         for (const comp of components) {
-          await restoreStock(client, comp.product_id, comp.quantity * item.quantity);
+          await restoreStock(client, comp.product_id, comp.quantity * item.quantity, companyId);
         }
       }
     }
@@ -373,9 +408,9 @@ export async function voidSale(id, void_reason) {
     const { rows: updated } = await client.query(
       `UPDATE sales
        SET status = 'voided', void_reason = $1, voided_at = NOW()
-       WHERE id = $2
+       WHERE id = $2 AND company_id = $3
        RETURNING *`,
-      [void_reason.trim(), id]
+      [void_reason.trim(), id, companyId]
     );
 
     await client.query('COMMIT');

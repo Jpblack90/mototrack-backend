@@ -34,7 +34,7 @@ function httpStatus(code) {
  */
 export async function getAllKits(req, res, next) {
   try {
-    const kits = await svc.getAllKits();
+    const kits = await svc.getAllKits(req.user.company_id);
     ok(res, kits);
   } catch (err) {
     next(err);
@@ -46,7 +46,7 @@ export async function getAllKits(req, res, next) {
  */
 export async function createKit(req, res, next) {
   try {
-    const kit = await svc.createKit(req.body);
+    const kit = await svc.createKit(req.body, req.user.company_id);
     ok(res, kit, 201);
   } catch (err) {
     if (err.code) return fail(res, err.message, httpStatus(err.code));
@@ -61,7 +61,7 @@ export async function createKit(req, res, next) {
 export async function getAllSales(req, res, next) {
   try {
     const { status } = req.query;
-    const sales = await svc.getAll({ status });
+    const sales = await svc.getAll({ status }, req.user.company_id);
     ok(res, sales);
   } catch (err) {
     next(err);
@@ -73,7 +73,7 @@ export async function getAllSales(req, res, next) {
  */
 export async function getSale(req, res, next) {
   try {
-    const sale = await svc.getById(req.params.id);
+    const sale = await svc.getById(req.params.id, req.user.company_id);
     if (!sale) return fail(res, `Venta #${req.params.id} no encontrada.`, 404);
     ok(res, sale);
   } catch (err) {
@@ -86,7 +86,7 @@ export async function getSale(req, res, next) {
  */
 export async function createSale(req, res, next) {
   try {
-    const sale = await svc.createSale(req.body);
+    const sale = await svc.createSale(req.body, req.user.company_id);
     ok(res, sale, 201);
   } catch (err) {
     if (err.code) return fail(res, err.message, httpStatus(err.code));
@@ -101,7 +101,7 @@ export async function createSale(req, res, next) {
 export async function voidSale(req, res, next) {
   try {
     const { void_reason } = req.body;
-    const sale = await svc.voidSale(req.params.id, void_reason);
+    const sale = await svc.voidSale(req.params.id, void_reason, req.user.company_id);
     ok(res, sale);
   } catch (err) {
     if (err.code) return fail(res, err.message, httpStatus(err.code));

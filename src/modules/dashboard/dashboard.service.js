@@ -35,12 +35,13 @@ function resolveDateRange(from, to) {
 // ─── Secciones del dashboard ──────────────────────────────────────────────────
 
 /**
- * Resumen de ventas completadas en un rango de fechas.
+ * Resumen de ventas completadas en un rango de fechas para la empresa dada.
  * Si no se pasan fechas, usa el día de hoy.
  *
  * @param {{ from?: string, to?: string }} param
+ * @param {number} companyId
  */
-export async function getSalesSummary({ from, to } = {}) {
+export async function getSalesSummary({ from, to } = {}, companyId) {
   const { dateFrom, dateTo } = resolveDateRange(from, to);
 
   // Totales generales
@@ -49,10 +50,11 @@ export async function getSalesSummary({ from, to } = {}) {
        COUNT(*)::INTEGER          AS total_sales_count,
        COALESCE(SUM(total), 0)    AS total_revenue
      FROM sales
-     WHERE status    = 'completed'
-       AND created_at >= $1
-       AND created_at <= $2`,
-    [dateFrom, dateTo]
+     WHERE company_id = $1
+       AND status     = 'completed'
+       AND created_at >= $2
+       AND created_at <= $3`,
+    [companyId, dateFrom, dateTo]
   );
 
   // Desglose por método de pago
@@ -62,17 +64,16 @@ export async function getSalesSummary({ from, to } = {}) {
        COUNT(*)::INTEGER       AS count,
        COALESCE(SUM(total), 0) AS revenue
      FROM sales
-     WHERE status    = 'completed'
-       AND created_at >= $1
-       AND created_at <= $2
+     WHERE company_id = $1
+       AND status     = 'completed'
+       AND created_at >= $2
+       AND created_at <= $3
      GROUP BY payment_method
      ORDER BY revenue DESC`,
-    [dateFrom, dateTo]
+    [companyId, dateFrom, dateTo]
   );
 
   // Top 5 productos más vendidos (solo líneas con product_id, no kits)
-  // Simplificación conocida: los kits se excluyen porque su unidad de medida
-  // es el bundle, no el producto individual — incluirlos distorsionaría el ranking.
   const { rows: topProducts } = await pool.query(
     `SELECT
        p.id,
@@ -83,14 +84,15 @@ export async function getSalesSummary({ from, to } = {}) {
      FROM   sale_items si
      JOIN   products   p  ON p.id = si.product_id
      JOIN   sales      s  ON s.id = si.sale_id
-     WHERE  si.product_id IS NOT NULL
+     WHERE  s.company_id = $1
+       AND  si.product_id IS NOT NULL
        AND  s.status     = 'completed'
-       AND  s.created_at >= $1
-       AND  s.created_at <= $2
+       AND  s.created_at >= $2
+       AND  s.created_at <= $3
      GROUP BY p.id, p.name, p.sku
      ORDER BY total_quantity_sold DESC
      LIMIT 5`,
-    [dateFrom, dateTo]
+    [companyId, dateFrom, dateTo]
   );
 
   return {
@@ -103,28 +105,33 @@ export async function getSalesSummary({ from, to } = {}) {
 }
 
 /**
- * Resumen del inventario: productos activos, stock bajo y valor total.
+ * Resumen del inventario de la empresa: productos activos, stock bajo y valor total.
+ * @param {number} companyId
  */
-export async function getInventorySummary() {
+export async function getInventorySummary(companyId) {
   // Total de productos activos
   const { rows: countRows } = await pool.query(
-    `SELECT COUNT(*)::INTEGER AS total_active_products FROM products WHERE is_active = true`
+    `SELECT COUNT(*)::INTEGER AS total_active_products FROM products WHERE company_id = $1 AND is_active = true`,
+    [companyId]
   );
 
   // Productos con stock en o por debajo del mínimo
   const { rows: lowStock } = await pool.query(
     `SELECT id, name, sku, stock, min_stock
      FROM   products
-     WHERE  is_active = true
+     WHERE  company_id = $1
+       AND  is_active = true
        AND  stock <= min_stock
-     ORDER  BY stock ASC`
+     ORDER  BY stock ASC`,
+    [companyId]
   );
 
   // Valor total del inventario (stock × cost_price)
   const { rows: valueRows } = await pool.query(
     `SELECT ROUND(COALESCE(SUM(stock * cost_price), 0), 2) AS total_inventory_value
      FROM   products
-     WHERE  is_active = true`
+     WHERE  company_id = $1 AND is_active = true`,
+    [companyId]
   );
 
   return {
@@ -135,22 +142,27 @@ export async function getInventorySummary() {
 }
 
 /**
- * Resumen de Órdenes de Trabajo: conteo por estado y total de OT activas.
+ * Resumen de Órdenes de Trabajo de la empresa: conteo por estado y total de OT activas.
+ * @param {number} companyId
  */
-export async function getWorkOrdersSummary() {
+export async function getWorkOrdersSummary(companyId) {
   // Conteo por estado
   const { rows: byStatus } = await pool.query(
     `SELECT status, COUNT(*)::INTEGER AS count
      FROM   work_orders
+     WHERE  company_id = $1
      GROUP  BY status
-     ORDER  BY count DESC`
+     ORDER  BY count DESC`,
+    [companyId]
   );
 
   // OT activas = cualquier estado excepto los estados finales
   const { rows: activeRows } = await pool.query(
     `SELECT COUNT(*)::INTEGER AS active_count
      FROM   work_orders
-     WHERE  status NOT IN ('entregado', 'no_recogido')`
+     WHERE  company_id = $1
+       AND  status NOT IN ('entregado', 'no_recogido')`,
+    [companyId]
   );
 
   return {
@@ -160,23 +172,22 @@ export async function getWorkOrdersSummary() {
 }
 
 /**
- * Resumen de facturación: conteo por estado y lista de comprobantes en contingencia.
- *
- * pending_contingency reutiliza getPendingContingency() de invoicing.service.js
- * directamente. NO se duplica la query — garantía de consistencia con
- * GET /api/invoicing/pending.
+ * Resumen de facturación de la empresa: conteo por estado y lista de comprobantes en contingencia.
+ * @param {number} companyId
  */
-export async function getInvoicingSummary() {
+export async function getInvoicingSummary(companyId) {
   // Conteo de comprobantes por estado
   const { rows: byEstado } = await pool.query(
     `SELECT estado, COUNT(*)::INTEGER AS count
      FROM   invoices
+     WHERE  company_id = $1
      GROUP  BY estado
-     ORDER  BY count DESC`
+     ORDER  BY count DESC`,
+    [companyId]
   );
 
   // Reutilización directa — misma función, misma query, mismo resultado
-  const pendingContingency = await getPendingContingency();
+  const pendingContingency = await getPendingContingency(companyId);
 
   return {
     by_estado:           byEstado,
@@ -185,17 +196,18 @@ export async function getInvoicingSummary() {
 }
 
 /**
- * Panel completo: llama a las 4 secciones en paralelo.
+ * Panel completo: llama a las 4 secciones en paralelo para la empresa dada.
  * Si una sección falla individualmente, el error se propaga (Promise.all).
  *
  * @param {{ from?: string, to?: string }} param
+ * @param {number} companyId
  */
-export async function getFullDashboard({ from, to } = {}) {
+export async function getFullDashboard({ from, to } = {}, companyId) {
   const [sales, inventory, workorders, invoicing] = await Promise.all([
-    getSalesSummary({ from, to }),
-    getInventorySummary(),
-    getWorkOrdersSummary(),
-    getInvoicingSummary(),
+    getSalesSummary({ from, to }, companyId),
+    getInventorySummary(companyId),
+    getWorkOrdersSummary(companyId),
+    getInvoicingSummary(companyId),
   ]);
 
   return { sales, inventory, workorders, invoicing };

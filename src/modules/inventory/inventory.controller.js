@@ -24,7 +24,7 @@ const fail = (res, message, status = 400, code = undefined) =>
 export async function getAllItems(req, res, next) {
   try {
     const { search } = req.query;
-    const items = await inventoryService.getAll({ search });
+    const items = await inventoryService.getAll({ search }, req.user.company_id);
     ok(res, items);
   } catch (err) {
     next(err);
@@ -36,7 +36,7 @@ export async function getAllItems(req, res, next) {
  */
 export async function getItem(req, res, next) {
   try {
-    const item = await inventoryService.getById(req.params.id);
+    const item = await inventoryService.getById(req.params.id, req.user.company_id);
     if (!item) return fail(res, 'Producto no encontrado.', 404);
     ok(res, item);
   } catch (err) {
@@ -55,7 +55,7 @@ export async function createItem(req, res, next) {
     if (req.body.force === true && req.user?.role !== 'admin') {
       return fail(res, 'Solo un Administrador puede forzar un margen negativo.', 403);
     }
-    const newItem = await inventoryService.create(req.body, req.user?.id ?? null);
+    const newItem = await inventoryService.create(req.body, req.user.company_id, req.user?.id ?? null);
     ok(res, newItem, 201);
   } catch (err) {
     if (err.code === 'NEGATIVE_MARGIN') return fail(res, err.message, 422);
@@ -75,7 +75,7 @@ export async function updateItem(req, res, next) {
     if (req.body.force === true && req.user?.role !== 'admin') {
       return fail(res, 'Solo un Administrador puede forzar un margen negativo.', 403);
     }
-    const updated = await inventoryService.update(req.params.id, req.body, req.user?.id ?? null);
+    const updated = await inventoryService.update(req.params.id, req.body, req.user.company_id, req.user?.id ?? null);
     if (!updated) return fail(res, 'Producto no encontrado.', 404);
     ok(res, updated);
   } catch (err) {
@@ -91,7 +91,7 @@ export async function updateItem(req, res, next) {
  */
 export async function deleteItem(req, res, next) {
   try {
-    const deleted = await inventoryService.remove(req.params.id);
+    const deleted = await inventoryService.remove(req.params.id, req.user.company_id);
     if (!deleted) return fail(res, 'Producto no encontrado o ya estaba inactivo.', 404);
     ok(res, { id: Number(req.params.id), is_active: false });
   } catch (err) {

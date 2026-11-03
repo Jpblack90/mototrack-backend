@@ -19,6 +19,16 @@ async function seedAdmin() {
   try {
     client = await pool.connect();
 
+    // Obtener la empresa inicial
+    const { rows: companyRows } = await client.query(
+      `SELECT id FROM companies ORDER BY id LIMIT 1`
+    );
+    if (companyRows.length === 0) {
+      console.error('❌  Error: Ejecuta primero npm run migrate');
+      process.exit(1);
+    }
+    const companyId = companyRows[0].id;
+
     // Verificar si ya existe al menos un admin
     const { rows } = await client.query(
       `SELECT id, email FROM users WHERE role = 'admin' LIMIT 1`
@@ -34,10 +44,10 @@ async function seedAdmin() {
 
     // Insertar el admin
     const { rows: created } = await client.query(
-      `INSERT INTO users (name, email, password_hash, role)
-       VALUES ($1, $2, $3, 'admin')
-       RETURNING id, name, email, role`,
-      [ADMIN_NAME, ADMIN_EMAIL, password_hash]
+      `INSERT INTO users (company_id, name, email, password_hash, role)
+       VALUES ($1, $2, $3, $4, 'admin')
+       RETURNING id, name, email, role, company_id`,
+      [companyId, ADMIN_NAME, ADMIN_EMAIL, password_hash]
     );
 
     console.log('\n✅  Usuario Administrador creado exitosamente:');

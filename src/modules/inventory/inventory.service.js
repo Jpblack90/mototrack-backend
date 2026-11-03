@@ -121,7 +121,7 @@ function calcMargin(sale_price, cost_price) {
  *
  * @param {{ search?: string }} options
  */
-export async function getAll({ search } = {}) {
+export async function getAll({ search } = {}, companyId) {
   let query;
   let params;
 
@@ -131,24 +131,26 @@ export async function getAll({ search } = {}) {
       SELECT *
       FROM   products
       WHERE  is_active = true
+        AND  company_id = $1
         AND  (
-          name ILIKE $1
-          OR sku ILIKE $1
-          OR brand ILIKE $1
-          OR category ILIKE $1
-          OR array_to_string(compatible_models, ' ') ILIKE $1
+          name ILIKE $2
+          OR sku ILIKE $2
+          OR brand ILIKE $2
+          OR category ILIKE $2
+          OR array_to_string(compatible_models, ' ') ILIKE $2
         )
       ORDER  BY id ASC
     `;
-    params = [pattern];
+    params = [companyId, pattern];
   } else {
     query = `
       SELECT *
       FROM   products
       WHERE  is_active = true
+        AND  company_id = $1
       ORDER  BY id ASC
     `;
-    params = [];
+    params = [companyId];
   }
 
   const { rows } = await pool.query(query, params);
@@ -158,14 +160,15 @@ export async function getAll({ search } = {}) {
 }
 
 /**
- * Retorna un único producto activo por id.
+ * Retorna un único producto activo por id y empresa.
  * @param {number|string} id
+ * @param {number}        companyId
  * @returns {object|null}
  */
-export async function getById(id) {
+export async function getById(id, companyId) {
   const { rows } = await pool.query(
-    `SELECT * FROM products WHERE id = $1 AND is_active = true`,
-    [id]
+    `SELECT * FROM products WHERE id = $1 AND company_id = $2 AND is_active = true`,
+    [id, companyId]
   );
   if (!rows[0]) return null;
   const p = rows[0];
@@ -176,14 +179,12 @@ export async function getById(id) {
  * Crea un nuevo producto.
  * Valida campos y regla de margen (con soporte para force).
  *
- * RETROFIT Fase 6: acepta userId para registrar quién aprobó un margen
- * negativo forzado (force_approved_by). No cambia la lógica de validación.
- *
  * @param {object}      data
- * @param {number|null} userId  ID del usuario autenticado (req.user.id)
+ * @param {number}      companyId ID de la empresa del usuario
+ * @param {number|null} userId    ID del usuario autenticado (req.user.id)
  * @throws {AppError}
  */
-export async function create(data, userId = null) {
+export async function create(data, companyId, userId = null) {
   validateProductData(data); // lanza si hay error
 
   const {
@@ -207,11 +208,12 @@ export async function create(data, userId = null) {
 
   const { rows } = await pool.query(
     `INSERT INTO products
-       (sku, name, brand, category, compatible_models, cost_price, sale_price,
+       (company_id, sku, name, brand, category, compatible_models, cost_price, sale_price,
         stock, min_stock, ai_confidence, registration_method, force_approved_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      RETURNING *`,
     [
+      companyId,
       sku ?? null,
       name.trim(),
       brand ?? null,
@@ -232,20 +234,18 @@ export async function create(data, userId = null) {
 }
 
 /**
- * Actualiza un producto activo por id.
+ * Actualiza un producto activo por id y empresa.
  * Aplica la misma validación de margen que create().
- *
- * RETROFIT Fase 6: acepta userId para registrar quién aprobó un margen
- * negativo forzado (force_approved_by). No cambia la lógica de validación.
  *
  * @param {number|string} id
  * @param {object}        data
+ * @param {number}        companyId
  * @param {number|null}   userId  ID del usuario autenticado (req.user.id)
- * @returns {object|null}  null si no existe o está inactivo
+ * @returns {object|null} null si no existe o está inactivo
  */
-export async function update(id, data, userId = null) {
-  // Verificar que el producto existe y está activo
-  const existing = await getById(id);
+export async function update(id, data, companyId, userId = null) {
+  // Verificar que el producto existe y pertenece a la empresa
+  const existing = await getById(id, companyId);
   if (!existing) return null;
 
   // Si el caller no envió algún precio, usamos el valor actual de la BD
@@ -304,7 +304,7 @@ export async function update(id, data, userId = null) {
        registration_method = COALESCE($13, registration_method),
        force_approved_by   = COALESCE($14, force_approved_by),
        updated_at          = NOW()
-     WHERE id = $15 AND is_active = true
+     WHERE id = $15 AND company_id = $16 AND is_active = true
      RETURNING *`,
     [
       sku ?? null,
@@ -322,6 +322,7 @@ export async function update(id, data, userId = null) {
       registration_method ?? null,
       forceApprovedBy,
       id,
+      companyId,
     ]
   );
 
@@ -331,17 +332,18 @@ export async function update(id, data, userId = null) {
 }
 
 /**
- * Soft-delete: marca el producto como inactivo.
+ * Soft-delete: marca el producto como inactivo filtrando por empresa.
  * NUNCA elimina el registro de la base de datos.
  *
  * @param {number|string} id
+ * @param {number}        companyId
  * @returns {boolean} false si el producto no existe o ya estaba inactivo
  */
-export async function remove(id) {
+export async function remove(id, companyId) {
   const { rowCount } = await pool.query(
     `UPDATE products SET is_active = false, updated_at = NOW()
-     WHERE id = $1 AND is_active = true`,
-    [id]
+     WHERE id = $1 AND company_id = $2 AND is_active = true`,
+    [id, companyId]
   );
   return rowCount > 0;
 }
@@ -354,18 +356,19 @@ export async function remove(id) {
 
 /**
  * Decrementa el stock de un producto dentro de una transacción abierta.
- * Usa SELECT ... FOR UPDATE para evitar condiciones de carrera.
+ * Usa SELECT ... FOR UPDATE para evitar condiciones de carrera y valida pertenencia a la empresa.
  *
  * @param {import('pg').PoolClient} client  Cliente de pg ya en transacción
  * @param {number}                  productId
  * @param {number}                  quantity  Unidades a descontar
+ * @param {number}                  companyId
  * @throws {AppError} INSUFFICIENT_STOCK si el stock disponible es menor a quantity
  */
-export async function decrementStock(client, productId, quantity) {
+export async function decrementStock(client, productId, quantity, companyId) {
   // Bloquea la fila para evitar que otra transacción concurrente lea el mismo stock
   const { rows } = await client.query(
-    `SELECT id, name, stock FROM products WHERE id = $1 AND is_active = true FOR UPDATE`,
-    [productId]
+    `SELECT id, name, stock FROM products WHERE id = $1 AND company_id = $2 AND is_active = true FOR UPDATE`,
+    [productId, companyId]
   );
 
   if (!rows[0]) {
@@ -388,8 +391,8 @@ export async function decrementStock(client, productId, quantity) {
   }
 
   await client.query(
-    `UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id = $2`,
-    [quantity, productId]
+    `UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id = $2 AND company_id = $3`,
+    [quantity, productId, companyId]
   );
 }
 
@@ -400,10 +403,11 @@ export async function decrementStock(client, productId, quantity) {
  * @param {import('pg').PoolClient} client  Cliente de pg ya en transacción
  * @param {number}                  productId
  * @param {number}                  quantity  Unidades a devolver
+ * @param {number}                  companyId
  */
-export async function restoreStock(client, productId, quantity) {
+export async function restoreStock(client, productId, quantity, companyId) {
   await client.query(
-    `UPDATE products SET stock = stock + $1, updated_at = NOW() WHERE id = $2`,
-    [quantity, productId]
+    `UPDATE products SET stock = stock + $1, updated_at = NOW() WHERE id = $2 AND company_id = $3`,
+    [quantity, productId, companyId]
   );
 }
