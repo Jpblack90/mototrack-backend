@@ -4,6 +4,18 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Fase 11 - Tarea 11.1b)
+- Migración `scripts/migrations/002_categoria_producto.sql`: agrega columna `category VARCHAR(40)` e índice B-tree en tabla `products` (Jean Pool)
+- Constante `PRODUCT_CATEGORIES` con las 12 categorías oficiales del taller en `src/modules/inventory/inventory.service.js` (Jean Pool)
+- Validación de `category` (422 si no pertenece a la lista) y saneamiento de `compatible_models` (trim, sin duplicados, máximo 20) en `create` y `update` de inventario (Jean Pool)
+- Ampliación de Gemini en `src/modules/inventory/inventory.aiClient.js`: detección de `detected_category`, sugerencia de `suggested_compatible_models` y discriminación de origen `compatibility_source` ('empaque' | 'inferido' | 'ninguno') (Jean Pool)
+- Búsqueda `GET /api/inventory?search=` ampliada a `brand`, `category` y `array_to_string(compatible_models, ' ')` con SQL parametrizado (RF-08) (Jean Pool)
+
+### Changed (Fase 11 - Tarea 11.1b)
+- `src/modules/inventory/inventory.service.js`: `update()` admite vaciar `compatible_models` (`[]` → `'{}'`) y `category` (`null` → `NULL`) distinguiendo campos omitidos de enviados vacíos mediante evaluación condicional SQL (Jean Pool)
+- `src/modules/inventory/inventory.aiClient.js`: timeout de 10 s configurable (`AI_TIMEOUT_MS`) que aborta con `AI_TIMEOUT` (HTTP 503) e instruye el registro manual (Jean Pool)
+- `src/modules/inventory/inventory.aiClient.js`: prompt ajustado para delimitar la fuente `'empaque'` a texto visible en la imagen y restringir `'inferido'` a modelos y marcas comercializadas en Perú (Jean Pool)
+
 ### Added (Fase 11 - Tarea 11.1)
 - Runner de migraciones SQL transaccionales `scripts/migrate.js` con registro en tabla `schema_migrations` y comando `npm run migrate` (Jean Pool)
 - Migración `scripts/migrations/001_rol_almacenero.sql`: actualiza el CHECK constraint `users_role_check` en la tabla `users` para admitir el rol `almacenero` (Jean Pool)

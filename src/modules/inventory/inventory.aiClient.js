@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { PRODUCT_CATEGORIES } from './inventory.service.js';
 
 // ─── Cliente Gemini ───────────────────────────────────────────────────────────
 
@@ -16,20 +17,27 @@ class AppError extends Error {
 
 // ─── Prompt de análisis ───────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `Eres un experto en identificación de repuestos y accesorios para motocicletas.
+const SYSTEM_PROMPT = `Eres un experto en identificación de repuestos y accesorios para motocicletas en Perú.
 Se te mostrará la imagen de un empaque o de un repuesto. Tu tarea es:
-1. Identificar el nombre comercial más probable del producto.
-2. Identificar la marca del fabricante.
-3. Estimar tu nivel de confianza (0-100) sobre la identificación, donde:
+1. Identificar el nombre comercial más probable del producto (detected_name).
+2. Identificar la marca del fabricante (detected_brand).
+3. Clasificar el producto en una de las siguientes categorías válidas (detected_category):
+   ['Motor', 'Filtros', 'Frenos', 'Transmisión', 'Suspensión', 'Sistema eléctrico', 'Iluminación', 'Llantas y cámaras', 'Lubricantes', 'Carrocería', 'Accesorios', 'Otros'].
+4. Estimar tu nivel de confianza (0-100) sobre la identificación (confidence), donde:
    - 80-100: nombre y marca claramente visibles en el empaque.
    - 50-79: texto parcial o logo visible, identificación probable pero con dudas.
    - 0-49: imagen borrosa, empaque genérico o repuesto sin identificación clara.
+5. Identificar o sugerir modelos de motocicleta compatibles (suggested_compatible_models) e indicar la fuente (compatibility_source):
+   - Si en la imagen hay texto visible de modelos de moto compatibles (en el empaque, etiqueta o rótulo), cópialos tal cual en el array y usa compatibility_source = 'empaque'.
+   - Si no hay texto de modelos pero la pieza es reconocible con certeza, sugiere únicamente modelos comercializados en Perú (marcas como Honda, Bajaj, Yamaha, Suzuki, TVS, Ronco, Wanxin, etc., formato "Marca Modelo", ej. "Honda CG125", "Bajaj Pulsar NS200", "Yamaha FZ16"), máximo 8 modelos, y usa compatibility_source = 'inferido'. No sugieras marcas que no se venden en Perú.
+   - Si no puedes saberlo con certeza, devuelve un array vacío [] y compatibility_source = 'ninguno'.
+   - Está ESTRICTAMENTE PROHIBIDO inventar o alucinar modelos para rellenar el campo.
 
-REGLA DE IDIOMA OBLIGATORIA: el campo detected_name SIEMPRE debe estar en español,
-sin importar el idioma del texto que aparezca en el empaque o la etiqueta de la imagen.
-Si el empaque dice "Oil Filter", escribe "Filtro de Aceite". Si dice "Brake Pads", escribe "Pastillas de Freno".
+REGLA DE IDIOMA OBLIGATORIA:
+Todos los textos (detected_name, detected_category) deben estar en ESPAÑOL, sin importar el idioma del texto en el empaque.
+Si dice "Oil Filter", escribe "Filtro de Aceite". Si dice "Brake Pads", escribe "Pastillas de Freno".
 
-Responde ÚNICAMENTE con el objeto JSON requerido, sin texto adicional.`;
+Responde ÚNICAMENTE con el objeto JSON requerido por el schema, sin texto adicional.`;
 
 // ─── Precalentamiento de conexión ─────────────────────────────────────────────
 
@@ -68,9 +76,17 @@ export async function warmUp() {
  */
 export async function analyzeProductImage({ imageBase64, mimeType }) {
   const start = Date.now();
+  const timeoutMs = Number(process.env.AI_TIMEOUT_MS) || 10000;
+  let timer;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new AppError('La IA tardó demasiado. Registra el producto manualmente.', 'AI_TIMEOUT', 503));
+    }, timeoutMs);
+  });
 
   try {
-    const response = await ai.models.generateContent({
+    const generatePromise = ai.models.generateContent({
       model: 'gemini-3.5-flash-lite',   // ← cambiado desde 'gemini-3.6-flash' para cumplir RF-01 (<4s)
       contents: [
         {
@@ -101,25 +117,53 @@ export async function analyzeProductImage({ imageBase64, mimeType }) {
             detected_name:  { type: 'string'  },
             detected_brand: { type: 'string'  },
             confidence:     { type: 'number'  },
+            detected_category: {
+              type: 'string',
+              enum: PRODUCT_CATEGORIES,
+            },
+            suggested_compatible_models: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+            compatibility_source: {
+              type: 'string',
+              enum: ['empaque', 'inferido', 'ninguno'],
+            },
           },
-          required: ['detected_name', 'detected_brand', 'confidence'],
+          required: [
+            'detected_name',
+            'detected_brand',
+            'confidence',
+            'detected_category',
+            'suggested_compatible_models',
+            'compatibility_source',
+          ],
         },
       },
     });
 
+    const response = await Promise.race([generatePromise, timeoutPromise]);
     const latency_ms = Date.now() - start;
 
     // El SDK garantiza JSON válido cuando se usa responseMimeType + responseSchema
     const parsed = JSON.parse(response.text);
 
     return {
-      detected_name:  parsed.detected_name  ?? '',
-      detected_brand: parsed.detected_brand ?? '',
-      confidence:     Number(parsed.confidence ?? 0),
+      detected_name:               parsed.detected_name  ?? '',
+      detected_brand:              parsed.detected_brand ?? '',
+      confidence:                  Number(parsed.confidence ?? 0),
+      detected_category:           parsed.detected_category ?? 'Otros',
+      suggested_compatible_models: Array.isArray(parsed.suggested_compatible_models)
+        ? parsed.suggested_compatible_models.slice(0, 8)
+        : [],
+      compatibility_source:        parsed.compatibility_source ?? 'ninguno',
       latency_ms,
     };
 
   } catch (err) {
+    if (err.code === 'AI_TIMEOUT') {
+      throw err;
+    }
     // Cualquier fallo de la API (red, cuota, key inválida, timeout) se convierte
     // en un AppError controlado. El endpoint lo traduce a 503 y recomienda RF-02.
     throw new AppError(
@@ -128,5 +172,7 @@ export async function analyzeProductImage({ imageBase64, mimeType }) {
       'AI_SERVICE_ERROR',
       503
     );
+  } finally {
+    clearTimeout(timer);
   }
 }

@@ -6,8 +6,14 @@ import { analyzeProductImage } from './inventory.aiClient.js';
 const ok = (res, data, status = 200) =>
   res.status(status).json({ success: true, data });
 
-const fail = (res, message, status = 400) =>
-  res.status(status).json({ success: false, error: { message } });
+const fail = (res, message, status = 400, code = undefined) =>
+  res.status(status).json({
+    success: false,
+    error: {
+      message,
+      ...(code ? { code } : {}),
+    },
+  });
 
 // ─── Controllers ─────────────────────────────────────────────────────────────
 
@@ -54,7 +60,7 @@ export async function createItem(req, res, next) {
   } catch (err) {
     if (err.code === 'NEGATIVE_MARGIN') return fail(res, err.message, 422);
     if (err.code === 'MISSING_FIELD')   return fail(res, err.message, 400);
-    if (err.code === 'INVALID_FIELD')   return fail(res, err.message, 400);
+    if (err.code === 'INVALID_FIELD')   return fail(res, err.message, err.statusCode || 422);
     next(err);
   }
 }
@@ -75,7 +81,7 @@ export async function updateItem(req, res, next) {
   } catch (err) {
     if (err.code === 'NEGATIVE_MARGIN') return fail(res, err.message, 422);
     if (err.code === 'MISSING_FIELD')   return fail(res, err.message, 400);
-    if (err.code === 'INVALID_FIELD')   return fail(res, err.message, 400);
+    if (err.code === 'INVALID_FIELD')   return fail(res, err.message, err.statusCode || 422);
     next(err);
   }
 }
@@ -134,23 +140,30 @@ export async function scanProduct(req, res, next) {
     });
 
     ok(res, {
-      detected_name:         result.detected_name,
-      detected_brand:        result.detected_brand,
-      confidence:            result.confidence,
-      latency_ms:            result.latency_ms,
+      detected_name:               result.detected_name,
+      detected_brand:              result.detected_brand,
+      confidence:                  result.confidence,
+      latency_ms:                  result.latency_ms,
       // Si confidence < 80 el frontend debe mostrar un aviso de confirmación
       // antes de usar los datos sugeridos para registrar el producto.
-      requires_confirmation: result.confidence < 80,
+      requires_confirmation:       result.confidence < 80,
+      detected_category:           result.detected_category,
+      suggested_compatible_models: result.suggested_compatible_models,
+      compatibility_source:        result.compatibility_source,
       // Conveniencia para el frontend: campos listos para pre-llenar el formulario
       suggested_product: {
-        name:                result.detected_name,
-        brand:               result.detected_brand,
-        ai_confidence:       result.confidence,
-        registration_method: 'ia',
+        name:                 result.detected_name,
+        brand:                result.detected_brand,
+        category:             result.detected_category,
+        compatible_models:    result.suggested_compatible_models,
+        compatibility_source: result.compatibility_source,
+        ai_confidence:        result.confidence,
+        registration_method:  'ia',
       },
     });
   } catch (err) {
-    if (err.code === 'AI_SERVICE_ERROR') return fail(res, err.message, 503);
+    if (err.code === 'AI_TIMEOUT') return fail(res, err.message, 503, 'AI_TIMEOUT');
+    if (err.code === 'AI_SERVICE_ERROR') return fail(res, err.message, 503, 'AI_SERVICE_ERROR');
     next(err);
   }
 }

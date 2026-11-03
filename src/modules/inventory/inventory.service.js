@@ -1,5 +1,22 @@
 import pool from '../../config/database.js';
 
+// ─── Categorías oficiales de productos ────────────────────────────────────────
+
+export const PRODUCT_CATEGORIES = [
+  'Motor',
+  'Filtros',
+  'Frenos',
+  'Transmisión',
+  'Suspensión',
+  'Sistema eléctrico',
+  'Iluminación',
+  'Llantas y cámaras',
+  'Lubricantes',
+  'Carrocería',
+  'Accesorios',
+  'Otros',
+];
+
 // ─── Errores controlados ──────────────────────────────────────────────────────
 
 class AppError extends Error {
@@ -51,6 +68,39 @@ function validateProductData(data) {
       422
     );
   }
+
+  // (c) Validación de categoría
+  if (data.category !== undefined && data.category !== null && data.category !== '') {
+    if (!PRODUCT_CATEGORIES.includes(data.category)) {
+      throw new AppError(
+        `"category" inválida. Debe ser una de: ${PRODUCT_CATEGORIES.join(', ')}.`,
+        'INVALID_FIELD',
+        422
+      );
+    }
+  }
+
+  // (d) Validación de compatible_models (array de strings, máximo 20)
+  if (data.compatible_models !== undefined && data.compatible_models !== null) {
+    if (!Array.isArray(data.compatible_models)) {
+      throw new AppError('"compatible_models" debe ser un array de strings.', 'INVALID_FIELD', 422);
+    }
+    const cleaned = [...new Set(data.compatible_models.map(m => String(m).trim()).filter(Boolean))];
+    if (cleaned.length > 20) {
+      throw new AppError('"compatible_models" no puede superar 20 modelos.', 'INVALID_FIELD', 422);
+    }
+  }
+}
+
+/**
+ * Sanitiza la lista de modelos compatibles: trim, deduplicación y máximo 20.
+ * @param {string[]|null|undefined} models
+ * @returns {string[]}
+ */
+function sanitizeCompatibleModels(models) {
+  if (!models || !Array.isArray(models)) return [];
+  const cleaned = [...new Set(models.map(m => String(m).trim()).filter(Boolean))];
+  return cleaned.slice(0, 20);
 }
 
 /**
@@ -81,7 +131,13 @@ export async function getAll({ search } = {}) {
       SELECT *
       FROM   products
       WHERE  is_active = true
-        AND  (name ILIKE $1 OR sku ILIKE $1)
+        AND  (
+          name ILIKE $1
+          OR sku ILIKE $1
+          OR brand ILIKE $1
+          OR category ILIKE $1
+          OR array_to_string(compatible_models, ' ') ILIKE $1
+        )
       ORDER  BY id ASC
     `;
     params = [pattern];
@@ -134,6 +190,7 @@ export async function create(data, userId = null) {
     sku,
     name,
     brand,
+    category,
     compatible_models,
     cost_price,
     sale_price,
@@ -146,18 +203,20 @@ export async function create(data, userId = null) {
 
   // force_approved_by solo se guarda si el admin usó force:true
   const forceApprovedBy = force === true ? (userId ?? null) : null;
+  const sanitizedModels = sanitizeCompatibleModels(compatible_models);
 
   const { rows } = await pool.query(
     `INSERT INTO products
-       (sku, name, brand, compatible_models, cost_price, sale_price,
+       (sku, name, brand, category, compatible_models, cost_price, sale_price,
         stock, min_stock, ai_confidence, registration_method, force_approved_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      RETURNING *`,
     [
       sku ?? null,
       name.trim(),
       brand ?? null,
-      compatible_models ?? null,
+      category || null,
+      sanitizedModels,
       Number(cost_price),
       Number(sale_price),
       Number(stock),
@@ -195,6 +254,8 @@ export async function update(id, data, userId = null) {
     cost_price: data.cost_price ?? existing.cost_price,
     sale_price: data.sale_price ?? existing.sale_price,
     force: data.force,
+    category: data.category !== undefined ? data.category : existing.category,
+    compatible_models: data.compatible_models !== undefined ? data.compatible_models : existing.compatible_models,
   };
 
   validateProductData(merged);
@@ -203,6 +264,7 @@ export async function update(id, data, userId = null) {
     sku,
     name,
     brand,
+    category,
     compatible_models,
     cost_price,
     sale_price,
@@ -216,28 +278,42 @@ export async function update(id, data, userId = null) {
   // force_approved_by solo se actualiza si el admin usó force:true
   const forceApprovedBy = force === true ? (userId ?? null) : null;
 
+  const hasCategory = category !== undefined;
+  const categoryVal = (hasCategory && category && typeof category === 'string' && category.trim() !== '')
+    ? category.trim()
+    : null;
+
+  const hasCompatibleModels = compatible_models !== undefined;
+  const modelsVal = hasCompatibleModels && Array.isArray(compatible_models)
+    ? sanitizeCompatibleModels(compatible_models)
+    : [];
+
   const { rows } = await pool.query(
     `UPDATE products
      SET
        sku                 = COALESCE($1,  sku),
        name                = COALESCE($2,  name),
        brand               = COALESCE($3,  brand),
-       compatible_models   = COALESCE($4,  compatible_models),
-       cost_price          = COALESCE($5,  cost_price),
-       sale_price          = COALESCE($6,  sale_price),
-       stock               = COALESCE($7,  stock),
-       min_stock           = COALESCE($8,  min_stock),
-       ai_confidence       = COALESCE($9,  ai_confidence),
-       registration_method = COALESCE($10, registration_method),
-       force_approved_by   = COALESCE($11, force_approved_by),
+       category            = CASE WHEN $4::boolean THEN $5::varchar ELSE category END,
+       compatible_models   = CASE WHEN $6::boolean THEN $7::text[]  ELSE compatible_models END,
+       cost_price          = COALESCE($8,  cost_price),
+       sale_price          = COALESCE($9,  sale_price),
+       stock               = COALESCE($10, stock),
+       min_stock           = COALESCE($11, min_stock),
+       ai_confidence       = COALESCE($12, ai_confidence),
+       registration_method = COALESCE($13, registration_method),
+       force_approved_by   = COALESCE($14, force_approved_by),
        updated_at          = NOW()
-     WHERE id = $12 AND is_active = true
+     WHERE id = $15 AND is_active = true
      RETURNING *`,
     [
       sku ?? null,
       name ? name.trim() : null,
       brand ?? null,
-      compatible_models ?? null,
+      hasCategory,
+      categoryVal,
+      hasCompatibleModels,
+      modelsVal,
       cost_price != null ? Number(cost_price) : null,
       sale_price != null ? Number(sale_price) : null,
       stock != null ? Number(stock) : null,
