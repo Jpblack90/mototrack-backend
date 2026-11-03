@@ -20,11 +20,11 @@ router.get('/',       authenticate,                              getAllItems);
 // ⚠️  ORDEN CRÍTICO (Fase 8): POST /scan DEBE declararse ANTES de GET /:id.
 //    Si /:id estuviera primero, Express interpretaría la cadena "scan" como un
 //    id numérico y el handler de escaneo nunca se alcanzaría.
-router.post('/scan',  authenticate, authorize('admin','cajero'), scanProduct);
+router.post('/scan',  authenticate, authorize('admin','cajero','almacenero'), scanProduct);
 
-router.get('/:id',    authenticate,                              getItem);
-router.post('/',      authenticate, authorize('admin','cajero'), createItem);
-router.put('/:id',    authenticate, authorize('admin','cajero'), updateItem);
+router.get('/:id',    authenticate,                                           getItem);
+router.post('/',      authenticate, authorize('admin','cajero','almacenero'), createItem);
+router.put('/:id',    authenticate, authorize('admin','cajero','almacenero'), updateItem);
 router.delete('/:id', authenticate, authorize('admin'),          deleteItem);
 
 export default router;

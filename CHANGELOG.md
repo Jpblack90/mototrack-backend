@@ -4,6 +4,15 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Fase 11 - Tarea 11.1)
+- Runner de migraciones SQL transaccionales `scripts/migrate.js` con registro en tabla `schema_migrations` y comando `npm run migrate` (Jean Pool)
+- Migración `scripts/migrations/001_rol_almacenero.sql`: actualiza el CHECK constraint `users_role_check` en la tabla `users` para admitir el rol `almacenero` (Jean Pool)
+- Soporte para el rol `almacenero` en `src/modules/users/users.service.js` agregándolo a `VALID_ROLES` (Jean Pool)
+- Script de inicialización idempotente de usuarios demo `scripts/seed-demo-users.js` (`npm run seed:demo`) que crea `cajero@mototrack.local`, `almacenero@mototrack.local` y `mecanico@mototrack.local` validando `DEMO_USERS_PASSWORD` (Jean Pool)
+
+### Changed (Fase 11 - Tarea 11.1)
+- Permisos RBAC en `src/modules/inventory/inventory.routes.js`: los endpoints `POST /scan`, `POST /` y `PUT /:id` autorizan a `admin`, `cajero` y `almacenero` (Jean Pool)
+
 ### Added
 - Esquema SQL de la tabla `products` con 13 columnas (sku, brand, compatible_models, cost_price, sale_price, stock, min_stock, ai_confidence, registration_method, is_active, timestamps) en `scripts/schema.sql` (Jean Pool)
 - CRUD completo del módulo de inventario (`src/modules/inventory/`): getAll, getById, create, update, soft-delete (Jean Pool)

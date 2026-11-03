@@ -2,7 +2,7 @@ import bcrypt from 'bcrypt';
 import pool from '../../config/database.js';
 
 const SALT_ROUNDS = 10;
-const VALID_ROLES  = ['admin', 'cajero', 'mecanico'];
+const VALID_ROLES  = ['admin', 'cajero', 'almacenero', 'mecanico'];
 
 class AppError extends Error {
   constructor(message, code, statusCode = 400) {
