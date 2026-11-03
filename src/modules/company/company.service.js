@@ -1,13 +1,5 @@
 import pool from '../../config/database.js';
-
-class AppError extends Error {
-  constructor(message, statusCode = 400, code = 'ERROR') {
-    super(message);
-    this.statusCode = statusCode;
-    this.status = statusCode;
-    this.code = code;
-  }
-}
+import { AppError } from '../../shared/errors/AppError.js';
 
 /**
  * Valida un número de RUC peruano según el algoritmo oficial de SUNAT (Módulo 11).

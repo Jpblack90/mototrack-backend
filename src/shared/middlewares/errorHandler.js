@@ -7,14 +7,18 @@
 export function errorHandler(err, req, res, _next) {
   const status = err.status ?? err.statusCode ?? 500;
   const message = err.message ?? 'Error interno del servidor';
+  const code = err.code ?? (status >= 500 ? 'INTERNAL_SERVER_ERROR' : 'ERROR');
 
-  // En desarrollo mostramos el stack completo; en producción sólo el mensaje.
+  // Respuesta uniforme de error: { success: false, error: { message, code } }
   const response = {
     success: false,
-    message,
+    error: {
+      message,
+      code,
+    },
     ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
   };
 
-  console.error(`[ERROR] ${req.method} ${req.url} → ${status}: ${message}`);
+  console.error(`[ERROR] ${req.method} ${req.url} → ${status}: ${message} (${code})`);
   res.status(status).json(response);
 }

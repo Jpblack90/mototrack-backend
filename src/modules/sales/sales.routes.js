@@ -29,8 +29,8 @@ router.post('/kits', authenticate, authorize('admin'), createKit);
 // POST  /api/sales           → crear venta (transacción real con decremento de stock)
 // PATCH /api/sales/:id/void  → anular venta — admin-only: un cajero no anula sus propias ventas
 //                              (control anti-fraude: requiere supervisión)
-router.get('/',           authenticate,                               getAllSales);
-router.get('/:id',        authenticate,                               getSale);
+router.get('/',           authenticate, authorize('admin', 'cajero'), getAllSales);
+router.get('/:id',        authenticate, authorize('admin', 'cajero'), getSale);
 router.post('/',          authenticate, authorize('admin','cajero'),  createSale);
 router.patch('/:id/void', authenticate, authorize('admin'),           voidSale);
 

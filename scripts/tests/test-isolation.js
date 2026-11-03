@@ -541,6 +541,70 @@ async function run() {
       `status: ${c13e.status}, id: ${c13e.data?.data?.id}`
     );
 
+    // -------------------------------------------------------------------------
+    // Caso 14: Aislamiento estricto en gestión de usuarios (/api/users)
+    // Admin de B no puede listar, editar, desactivar ni resetear usuarios de A
+    // -------------------------------------------------------------------------
+    console.log('--- Caso 14: Aislamiento en gestión de usuarios (/api/users) ---');
+    const userAId = companyA.mechanicId;
+
+    // 14a: B intenta GET /api/users/:user_id_de_A -> 404
+    const c14a = await request(`/users/${userAId}`, {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    assert(
+      c14a.status === 404,
+      'Admin de B no puede ver usuario de Empresa A (GET /api/users/:id -> 404)',
+      `status: ${c14a.status}`
+    );
+
+    // 14b: B intenta PATCH /api/users/:user_id_de_A -> 404
+    const c14b = await request(`/users/${userAId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${tokenB}` },
+      body: { name: 'Nombre Hackeado Por B' },
+    });
+    assert(
+      c14b.status === 404,
+      'Admin de B no puede modificar usuario de Empresa A (PATCH /api/users/:id -> 404)',
+      `status: ${c14b.status}`
+    );
+
+    // 14c: B intenta DELETE /api/users/:user_id_de_A -> 404
+    const c14c = await request(`/users/${userAId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    assert(
+      c14c.status === 404,
+      'Admin de B no puede desactivar usuario de Empresa A (DELETE /api/users/:id -> 404)',
+      `status: ${c14c.status}`
+    );
+
+    // 14d: B intenta POST /api/users/:user_id_de_A/reset-password -> 404
+    const c14d = await request(`/users/${userAId}/reset-password`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tokenB}` },
+      body: { new_password: 'NuevaPassword123' },
+    });
+    assert(
+      c14d.status === 404,
+      'Admin de B no puede resetear contraseña de usuario de Empresa A (POST /api/users/:id/reset-password -> 404)',
+      `status: ${c14d.status}`
+    );
+
+    // 14e: B lista usuarios (GET /api/users) -> ningún usuario pertenece a la Empresa A
+    const c14e = await request('/users', {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    const usersOfB = c14e.data?.data || [];
+    const containsUserOfA = usersOfB.some((u) => Number(u.id) === Number(userAId) || Number(u.id) === Number(companyA.adminId));
+    assert(
+      c14e.status === 200 && !containsUserOfA,
+      'Listado de usuarios de B no contiene ningún usuario perteneciente a la Empresa A',
+      `status: ${c14e.status}, total_users_b: ${usersOfB.length}`
+    );
+
     // ─────────────────────────────────────────────────────────────────────────
     // VERIFICACIÓN FINAL: EMPRESA REAL INTACTA
     // ─────────────────────────────────────────────────────────────────────────

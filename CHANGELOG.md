@@ -4,6 +4,21 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Fase 11 - Tarea 11.3)
+- Migración `scripts/migrations/005_usuarios_seguridad.sql`: agrega columnas `must_change_password BOOLEAN NOT NULL DEFAULT false` y `last_login_at TIMESTAMPTZ` a la tabla `users` (Jean Pool)
+- Módulo `src/shared/utils/passwordPolicy.js` con validador de políticas de seguridad de contraseñas (mínimo 8 caracteres, al menos una letra y un número) (Jean Pool)
+- Endpoint `POST /api/users/:id/reset-password` (solo admin, misma empresa): restablece contraseña temporal con `must_change_password = true` sin filtrar contraseñas en respuestas ni logs (Jean Pool)
+- Endpoint `POST /api/auth/change-password` (autenticado): cambio de contraseña con verificación de clave actual (401), validación de política (422) y actualización a `must_change_password = false` (Jean Pool)
+- Revocación inmediata en middleware `authenticate.js`: valida en cada petición mediante consulta directa con JOIN a BD que el usuario y la empresa sigan activos y no suspendidos, sincronizando el rol real en vivo (latencia promedio añadida: ~2.15 ms) (Jean Pool)
+- Protecciones de integridad en `src/modules/users/users.service.js`: bloqueo de auto-desactivación y auto-degradación de rol de administradores (409), y protección del último administrador activo de la empresa (409) (Jean Pool)
+- Unicidad de correo electrónico en creación de usuario responde con código HTTP 409 `EMAIL_ALREADY_EXISTS` (Jean Pool)
+- Registro de `last_login_at` en inicio de sesión exitoso y exposición de `must_change_password` en `/api/auth/login` y `/api/auth/me` (Jean Pool)
+- Caso 14 en `scripts/tests/test-isolation.js` validando aislamiento estricto de usuarios entre empresas (Jean Pool)
+- Suite integral `scripts/tests/verify-11-3.js` (`npm run test:users`) con 33 pruebas automatizadas de seguridad, políticas, sincronización de rol en vivo y aislamiento (Jean Pool)
+
+### Fixed (Fase 11 - Tarea 11.3)
+- Estandarización de formato uniforme de respuesta de error `{ success: false, error: { message, code } }` en `errorHandler.js` y módulo `company` utilizando la clase compartida `src/shared/errors/AppError.js` (Jean Pool)
+
 ### Added (Fase 11 - Tarea 11.2b)
 - Migración `scripts/migrations/004_igv_por_venta.sql`: agrega columna `igv_rate NUMERIC(4,3) NOT NULL` a la tabla `sales` preservando el 18% histórico para ventas previas (Jean Pool)
 - Módulo `src/modules/company/` (`company.routes.js`, `company.controller.js`, `company.service.js`) montado en `/api/company` para lectura y configuración dinámica por empresa (Jean Pool)
