@@ -4,6 +4,16 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Fase 11 - Tarea 11.2b)
+- Migración `scripts/migrations/004_igv_por_venta.sql`: agrega columna `igv_rate NUMERIC(4,3) NOT NULL` a la tabla `sales` preservando el 18% histórico para ventas previas (Jean Pool)
+- Módulo `src/modules/company/` (`company.routes.js`, `company.controller.js`, `company.service.js`) montado en `/api/company` para lectura y configuración dinámica por empresa (Jean Pool)
+- Endpoint `GET /api/company` accesible para todos los roles autenticados de la empresa (Jean Pool)
+- Endpoint `PUT /api/company` restringido a rol `admin` con validaciones rigurosas (módulo 11 de SUNAT para RUC, detección de duplicados 409, límite 300 KB para logo base64, rangos de IGV, umbral y días para moto no recogida) (Jean Pool)
+- Emisión de facturas y boletas vinculada a los datos fiscales reales de la empresa (`ruc`, `razon_social`, `direccion`) y rechazo 422 si el taller no ha completado su RUC y razón social (Jean Pool)
+- Cálculo y persistencia dinámica de `igv_rate` por empresa en ventas e invoices, reflejado con tasa real en el ticket de venta (Jean Pool)
+- Umbral de aprobación de órdenes de trabajo dinámico (`approval_threshold`) por empresa en lugar de constante estática (Jean Pool)
+- Caso 13 en `scripts/test-isolation.js` validando aislamiento y RBAC de la configuración de empresa (Jean Pool)
+
 ### Added (Fase 11 - Tarea 11.2a)
 - Migración `scripts/migrations/003_multi_tenant.sql`: creación de tabla `companies`, columna `company_id NOT NULL` con FK e índices en todas las tablas transaccionales (`users`, `products`, `kits`, `sales`, `vehicles`, `work_orders`, `invoices`, `notifications`) (Jean Pool)
 - Claves compuestas de unicidad por empresa: `products_company_sku_key (company_id, sku)` y `vehicles_company_placa_key (company_id, placa)` (Jean Pool)

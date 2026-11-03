@@ -6,6 +6,7 @@ import workordersRoutes from '../modules/workorders/workorders.routes.js';
 import salesRoutes      from '../modules/sales/sales.routes.js';
 import invoicingRoutes  from '../modules/invoicing/invoicing.routes.js';
 import dashboardRoutes  from '../modules/dashboard/dashboard.routes.js';
+import companyRoutes    from '../modules/company/company.routes.js';
 
 const router = Router();
 
@@ -16,5 +17,6 @@ router.use('/workorders', workordersRoutes);
 router.use('/sales',      salesRoutes);
 router.use('/invoicing',  invoicingRoutes);
 router.use('/dashboard',  dashboardRoutes);
+router.use('/company',    companyRoutes);
 
 export default router;

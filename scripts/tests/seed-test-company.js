@@ -1,5 +1,5 @@
 // =============================================================================
-// scripts/seed-test-company.js
+// scripts/tests/seed-test-company.js
 // Crea las empresas de prueba "[PRUEBA] Taller A" y "[PRUEBA] Taller B",
 // con sus respectivos admins, mecánicos, productos, kits y órdenes de trabajo.
 // Idempotente: si ya existen, las reactiva y actualiza.
@@ -8,7 +8,7 @@
 
 import 'dotenv/config';
 import bcrypt from 'bcrypt';
-import pool from '../src/config/database.js';
+import pool from '../../src/config/database.js';
 
 const DEMO_PASSWORD = process.env.DEMO_USERS_PASSWORD || 'Demo1234!';
 const SALT_ROUNDS   = 10;
@@ -38,15 +38,15 @@ async function seedOneCompany(client, config) {
   // 1. Empresa
   let companyId;
   const { rows: compRows } = await client.query(
-    `SELECT id, razon_social FROM companies WHERE razon_social = $1`,
+    `SELECT id, razon_social FROM companies WHERE razon_social = $1 OR razon_social LIKE $1 || '%' ORDER BY id ASC LIMIT 1`,
     [name]
   );
 
   if (compRows.length > 0) {
     companyId = compRows[0].id;
     await client.query(
-      `UPDATE companies SET is_active = true, status = 'active', ruc = COALESCE($1, ruc) WHERE id = $2`,
-      [ruc, companyId]
+      `UPDATE companies SET is_active = true, status = 'active', razon_social = $1, nombre_comercial = $1, ruc = COALESCE($2, ruc) WHERE id = $3`,
+      [name, ruc, companyId]
     );
     console.log(`ℹ️   Empresa "${name}" reactivada (id: ${companyId}).`);
   } else {

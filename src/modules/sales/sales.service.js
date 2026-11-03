@@ -11,10 +11,6 @@ class AppError extends Error {
   }
 }
 
-// ─── Constantes ───────────────────────────────────────────────────────────────
-
-const IGV_RATE = 0.18;
-
 // ─── Kits ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -170,6 +166,13 @@ export async function createSale({ customer_name, work_order_id, payment_method,
   try {
     await client.query('BEGIN');
 
+    // Obtener la tasa de IGV configurada para la empresa
+    const { rows: compRows } = await client.query(
+      `SELECT igv_rate FROM companies WHERE id = $1`,
+      [companyId]
+    );
+    const companyIgvRate = compRows[0] && compRows[0].igv_rate != null ? Number(compRows[0].igv_rate) : 0.18;
+
     // Validar orden de trabajo si fue especificada
     if (work_order_id) {
       const { rows: woRows } = await client.query(
@@ -187,9 +190,9 @@ export async function createSale({ customer_name, work_order_id, payment_method,
 
     // a) INSERT inicial en sales (totales en 0, se actualizan al final)
     const { rows: saleRows } = await client.query(
-      `INSERT INTO sales (company_id, customer_name, work_order_id, payment_method, subtotal, igv, total)
-       VALUES ($1, $2, $3, $4, 0, 0, 0) RETURNING id`,
-      [companyId, customer_name ?? null, work_order_id ?? null, payment_method]
+      `INSERT INTO sales (company_id, customer_name, work_order_id, payment_method, subtotal, igv, total, igv_rate)
+       VALUES ($1, $2, $3, $4, 0, 0, 0, $5) RETURNING id`,
+      [companyId, customer_name ?? null, work_order_id ?? null, payment_method, companyIgvRate]
     );
     const saleId = saleRows[0].id;
 
@@ -274,14 +277,14 @@ export async function createSale({ customer_name, work_order_id, payment_method,
       }
     }
 
-    // c) Calcular totales — el backend es la única fuente de verdad
-    const igv   = +(subtotalTotal * IGV_RATE).toFixed(2);
+    // c) Calcular totales usando el IGV configurado de la empresa
+    const igv   = +(subtotalTotal * companyIgvRate).toFixed(2);
     const total = +(subtotalTotal + igv).toFixed(2);
 
-    // d) Actualizar sales con los totales reales
+    // d) Actualizar sales con los totales reales y la tasa de IGV aplicada
     const { rows: updatedSale } = await client.query(
-      `UPDATE sales SET subtotal = $1, igv = $2, total = $3 WHERE id = $4 AND company_id = $5 RETURNING *`,
-      [subtotalTotal.toFixed(2), igv, total, saleId, companyId]
+      `UPDATE sales SET subtotal = $1, igv = $2, total = $3, igv_rate = $4 WHERE id = $5 AND company_id = $6 RETURNING *`,
+      [subtotalTotal.toFixed(2), igv, total, companyIgvRate, saleId, companyId]
     );
 
     await client.query('COMMIT');

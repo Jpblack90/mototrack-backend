@@ -1,5 +1,5 @@
 // =============================================================================
-// scripts/test-isolation.js
+// scripts/tests/test-isolation.js
 // Prueba de aislamiento multi-tenant estricto entre Empresa A y Empresa B.
 // Utiliza exclusivamente las empresas de prueba "[PRUEBA] Taller A" y "[PRUEBA] Taller B".
 // Imprime [PASA] o [FALLA] para cada caso de prueba.
@@ -8,7 +8,7 @@
 
 import 'dotenv/config';
 import jwt from 'jsonwebtoken';
-import pool from '../src/config/database.js';
+import pool from '../../src/config/database.js';
 import { seedTestCompany } from './seed-test-company.js';
 
 // ─── 1. Protección de entorno ─────────────────────────────────────────────────
@@ -266,6 +266,8 @@ async function run() {
     assert(c3.status === 404, 'B recibe 404 al intentar eliminar producto de A', `status: ${c3.status}`);
 
     console.log('--- Caso 4: B puede crear producto con el mismo SKU que uno de A (unicidad por empresa) ---');
+    // Limpieza preventiva si existía de una corrida previa
+    await pool.query('DELETE FROM products WHERE company_id = $1 AND sku = $2', [companyBId, companyA.productSku]);
     const c4 = await request('/inventory', {
       method: 'POST',
       headers: { Authorization: `Bearer ${tokenB}` },
@@ -474,6 +476,70 @@ async function run() {
       `status: ${c12.status}, code: ${c12.data?.error?.code}`
     );
     await pool.query(`UPDATE companies SET status = 'active' WHERE id = $1`, [companyBId]);
+
+    console.log('--- Caso 13: Aislamiento y permisos en /api/company ---');
+    // 13a: Admin B consulta configuración -> ve solo su empresa
+    const c13a = await request('/company', {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    assert(
+      c13a.status === 200 && c13a.data?.data?.id === companyBId,
+      'Admin de B ve solo los datos de configuración de su propia empresa',
+      `status: ${c13a.status}, id: ${c13a.data?.data?.id}`
+    );
+
+    // 13b: Admin B intenta actualizar con RUC inválido -> 422
+    const c13b = await request('/company', {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${tokenB}` },
+      body: { ruc: '123456' },
+    });
+    assert(
+      c13b.status === 422,
+      'PUT /api/company rechaza RUC inválido con status 422',
+      `status: ${c13b.status}`
+    );
+
+    // 13c: Mecánico de B intenta actualizar configuración -> 403 Forbidden
+    const loginMecB = await request('/auth/login', {
+      method: 'POST',
+      body: { email: companyB.mechanicEmail, password: companyB.adminPassword },
+    });
+    const tokenMecB = loginMecB.data?.data?.token;
+    const c13c = await request('/company', {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${tokenMecB}` },
+      body: { nombre_comercial: 'Intento Hack Mecánico' },
+    });
+    assert(
+      c13c.status === 403,
+      'PUT /api/company rechaza usuario sin rol admin con status 403',
+      `status: ${c13c.status}`
+    );
+
+    // 13d: Admin B actualiza nombre comercial exitosamente -> 200
+    const c13d = await request('/company', {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${tokenB}` },
+      body: { nombre_comercial: '[PRUEBA] B Express' },
+    });
+    assert(
+      c13d.status === 200 && c13d.data?.data?.nombre_comercial === '[PRUEBA] B Express',
+      'Admin de B actualiza con éxito su configuración',
+      `status: ${c13d.status}`
+    );
+
+    // 13e: Admin A consulta su configuración -> sus datos permanecen intactos
+    const c13e = await request('/company', {
+      headers: { Authorization: `Bearer ${tokenA}` },
+    });
+    assert(
+      c13e.status === 200 &&
+        c13e.data?.data?.id === companyAId &&
+        c13e.data?.data?.nombre_comercial !== '[PRUEBA] B Express',
+      'Configuración de Empresa A permanece aislada e intacta tras cambios en B',
+      `status: ${c13e.status}, id: ${c13e.data?.data?.id}`
+    );
 
     // ─────────────────────────────────────────────────────────────────────────
     // VERIFICACIÓN FINAL: EMPRESA REAL INTACTA

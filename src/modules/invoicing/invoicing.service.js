@@ -1,15 +1,6 @@
 import pool from '../../config/database.js';
 import { sendComprobante } from './invoicing.pseClient.js';
 
-// ─── Datos del negocio (hardcodeados para esta fase) ─────────────────────────
-// TODO Fase 6: mover a tabla de configuración del sistema y proteger con Auth.
-const BUSINESS_INFO = {
-  name:    'MotoTrack Taller S.A.C.',
-  ruc:     '20123456789',   // RUC ficticio con fines académicos
-  address: 'Av. Principal 123, Lima, Perú',
-  phone:   '01-234-5678',
-};
-
 // ─── Errores controlados ──────────────────────────────────────────────────────
 
 class AppError extends Error {
@@ -17,10 +8,24 @@ class AppError extends Error {
     super(message);
     this.code = code;
     this.statusCode = statusCode;
+    this.status = statusCode;
   }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Escapa caracteres especiales para XML.
+ */
+function escapeXml(str) {
+  if (typeof str !== 'string') return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
 
 /**
  * Construye un XML simplificado para el comprobante.
@@ -33,11 +38,13 @@ class AppError extends Error {
  *
  * @param {object} sale       Fila de la tabla sales con sus ítems expandidos
  * @param {object} invoiceData  { comprobante_type, serie, numero, customer_document_type, customer_document_number }
+ * @param {object} companyInfo { ruc, razon_social, direccion }
  * @returns {string}
  */
-export function buildSimplifiedXml(sale, invoiceData) {
+export function buildSimplifiedXml(sale, invoiceData, companyInfo = {}) {
   const { comprobante_type, serie, numero, customer_document_type, customer_document_number } =
     invoiceData;
+  const company = invoiceData.company || companyInfo;
 
   const itemsXml = (sale.items ?? [])
     .map(
@@ -58,9 +65,9 @@ export function buildSimplifiedXml(sale, invoiceData) {
   <numero>${numero}</numero>
   <fechaEmision>${new Date().toISOString()}</fechaEmision>
   <emisor>
-    <ruc>${BUSINESS_INFO.ruc}</ruc>
-    <razonSocial>${escapeXml(BUSINESS_INFO.name)}</razonSocial>
-    <direccion>${escapeXml(BUSINESS_INFO.address)}</direccion>
+    <ruc>${company.ruc ?? ''}</ruc>
+    <razonSocial>${escapeXml(company.razon_social ?? company.name ?? '')}</razonSocial>
+    <direccion>${escapeXml(company.direccion ?? company.address ?? '')}</direccion>
   </emisor>
   <receptor>
     <tipoDocumento>${customer_document_type ?? ''}</tipoDocumento>
@@ -74,16 +81,6 @@ export function buildSimplifiedXml(sale, invoiceData) {
     <total>${sale.total}</total>
   </totales>
 </comprobante>`;
-}
-
-/** Escapa caracteres especiales XML. */
-function escapeXml(str) {
-  return String(str ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
 }
 
 // ─── Servicio de Facturación ──────────────────────────────────────────────────
@@ -119,7 +116,21 @@ export async function createInvoice({
   try {
     await client.query('BEGIN');
 
-    // a) Buscar la venta con company_id
+    // a) Verificar datos fiscales de la empresa
+    const { rows: compRows } = await client.query(
+      `SELECT ruc, razon_social, direccion FROM companies WHERE id = $1`,
+      [companyId]
+    );
+    const company = compRows[0];
+    if (!company || !company.ruc || !company.razon_social || !company.ruc.trim() || !company.razon_social.trim()) {
+      throw new AppError(
+        'Configura el RUC y la razón social de tu taller en Configuración antes de emitir comprobantes.',
+        'MISSING_COMPANY_TAX_DATA',
+        422
+      );
+    }
+
+    // b) Buscar la venta con company_id
     const { rows: saleRows } = await client.query(
       `SELECT * FROM sales WHERE id = $1 AND company_id = $2`,
       [sale_id, companyId]
@@ -137,7 +148,7 @@ export async function createInvoice({
       );
     }
 
-    // b) RF-29: verificar idempotencia — ya existe un invoice para este sale_id en la empresa
+    // c) RF-29: verificar idempotencia — ya existe un invoice para este sale_id en la empresa
     const { rows: existing } = await client.query(
       `SELECT * FROM invoices WHERE sale_id = $1 AND company_id = $2`,
       [sale_id, companyId]
@@ -172,7 +183,7 @@ export async function createInvoice({
     );
     const numero = seriesRows[0].last_number;
 
-    // c) Insertar el invoice con numero y estado='pending'
+    // d) Insertar el invoice con numero y estado='pending'
     const { rows: invoiceRows } = await client.query(
       `INSERT INTO invoices
          (company_id, sale_id, comprobante_type, serie, numero, customer_document_type,
@@ -191,14 +202,14 @@ export async function createInvoice({
     );
     invoice = invoiceRows[0];
 
-    // Construir XML con el número correlativo ya asignado
+    // Construir XML con el número correlativo ya asignado y los datos del emisor
     const xml = buildSimplifiedXml(sale, {
       comprobante_type,
       serie,
       numero: invoice.numero,
       customer_document_type,
       customer_document_number,
-    });
+    }, company);
 
     // Guardar el XML en la fila
     await client.query(
@@ -214,16 +225,10 @@ export async function createInvoice({
     client.release();
   }
 
-  // d) Enviar al PSE simulado (fuera de la transacción del correlativo)
+  // e) Enviar al PSE simulado (fuera de la transacción del correlativo)
   let updatedInvoice;
   try {
-    const pseResult = await sendComprobante({ xml: invoice.xml_content || buildSimplifiedXml(sale, {
-      comprobante_type,
-      serie,
-      numero: invoice.numero,
-      customer_document_type,
-      customer_document_number,
-    }), simulatePseDown });
+    const pseResult = await sendComprobante({ xml: invoice.xml_content, simulatePseDown });
 
     const { rows } = await pool.query(
       `UPDATE invoices
@@ -398,10 +403,14 @@ export async function getAll({ estado } = {}, companyId) {
  */
 export async function getTicketData(id, companyId) {
   const { rows: invRows } = await pool.query(
-    `SELECT i.*, s.total, s.subtotal, s.igv, s.customer_name,
-            s.payment_method, s.created_at AS sale_date
+    `SELECT i.*, s.total, s.subtotal, s.igv, s.igv_rate, s.customer_name,
+            s.payment_method, s.created_at AS sale_date,
+            c.ruc AS comp_ruc, c.razon_social AS comp_razon_social,
+            c.nombre_comercial AS comp_nombre_comercial, c.direccion AS comp_direccion,
+            c.telefono AS comp_telefono, c.logo_data AS comp_logo_data
      FROM   invoices i
      JOIN   sales    s ON s.id = i.sale_id
+     JOIN   companies c ON c.id = i.company_id
      WHERE  i.id = $1 AND i.company_id = $2`,
     [id, companyId]
   );
@@ -422,7 +431,16 @@ export async function getTicketData(id, companyId) {
   );
 
   return {
-    business: BUSINESS_INFO,
+    business: {
+      name:             inv.comp_nombre_comercial || inv.comp_razon_social || 'MotoTrack',
+      razon_social:     inv.comp_razon_social,
+      nombre_comercial: inv.comp_nombre_comercial,
+      ruc:              inv.comp_ruc,
+      address:          inv.comp_direccion,
+      phone:            inv.comp_telefono,
+      logo_data:        inv.comp_logo_data,
+    },
+    igv_rate: inv.igv_rate != null ? parseFloat(inv.igv_rate) : 0.18,
     comprobante: {
       type:   inv.comprobante_type,
       serie:  inv.serie,
@@ -441,6 +459,7 @@ export async function getTicketData(id, companyId) {
       subtotal:       inv.subtotal,
       igv:            inv.igv,
       total:          inv.total,
+      igv_rate:       inv.igv_rate != null ? parseFloat(inv.igv_rate) : 0.18,
     },
   };
 }

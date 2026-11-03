@@ -26,12 +26,6 @@ export const VALID_TRANSITIONS = {
   no_recogido:           [],
 };
 
-/**
- * RF-16: monto (en soles) a partir del cual una reparación adicional
- * requiere aprobación explícita del cliente antes de ejecutarse.
- */
-export const APPROVAL_THRESHOLD = 100;
-
 // ─── Helpers internos ─────────────────────────────────────────────────────────
 
 /**
@@ -300,15 +294,24 @@ export async function updateStatus(id, newStatus, { diagnosis_notes, additional_
     );
   }
 
-  // c) Regla RF-16: desviar a pendiente_aprobacion si el costo supera el umbral
+  // c) Regla RF-16: desviar a pendiente_aprobacion si el costo supera el umbral configurado de la empresa
   let resolvedStatus = newStatus;
   let requiresApproval = false;
+
+  // Obtener el umbral de aprobación configurado para la empresa
+  const { rows: compRows } = await pool.query(
+    'SELECT approval_threshold FROM companies WHERE id = $1',
+    [companyId]
+  );
+  const approvalThreshold = compRows[0] && compRows[0].approval_threshold != null
+    ? Number(compRows[0].approval_threshold)
+    : 100;
 
   if (
     currentStatus === 'diagnostico' &&
     newStatus === 'en_reparacion' &&
     additional_cost != null &&
-    Number(additional_cost) > APPROVAL_THRESHOLD
+    Number(additional_cost) > approvalThreshold
   ) {
     resolvedStatus = 'pendiente_aprobacion';
     requiresApproval = true;

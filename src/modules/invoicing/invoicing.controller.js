@@ -8,7 +8,10 @@ const ok = (res, data, status = 200) =>
 const fail = (res, message, status = 400) =>
   res.status(status).json({ success: false, error: { message } });
 
-function httpStatus(code) {
+function httpStatus(err) {
+  if (err?.statusCode) return err.statusCode;
+  if (err?.status) return err.status;
+  const code = err?.code;
   const map = {
     SALE_NOT_FOUND:               404,
     INVOICE_NOT_FOUND:            404,
@@ -16,6 +19,7 @@ function httpStatus(code) {
     NOTHING_TO_RETRY:             422,
     MISSING_FIELD:                422,
     INVALID_FIELD:                422,
+    MISSING_COMPANY_TAX_DATA:     422,
   };
   return map[code] ?? 500;
 }
@@ -69,7 +73,7 @@ export async function getStatus(req, res, next) {
     const status = await svc.getStatus(req.params.id, req.user.company_id);
     ok(res, status);
   } catch (err) {
-    if (err.code) return fail(res, err.message, httpStatus(err.code));
+    if (err.code || err.statusCode) return fail(res, err.message, httpStatus(err));
     next(err);
   }
 }
@@ -82,7 +86,7 @@ export async function getTicketData(req, res, next) {
     const ticket = await svc.getTicketData(req.params.id, req.user.company_id);
     ok(res, ticket);
   } catch (err) {
-    if (err.code) return fail(res, err.message, httpStatus(err.code));
+    if (err.code || err.statusCode) return fail(res, err.message, httpStatus(err));
     next(err);
   }
 }
@@ -98,7 +102,7 @@ export async function createInvoice(req, res, next) {
     const httpCode = invoice.alreadyExists ? 200 : 201;
     ok(res, invoice, httpCode);
   } catch (err) {
-    if (err.code) return fail(res, err.message, httpStatus(err.code));
+    if (err.code || err.statusCode) return fail(res, err.message, httpStatus(err));
     next(err);
   }
 }
@@ -111,7 +115,7 @@ export async function retryContingency(req, res, next) {
     const invoice = await svc.retryContingency(req.params.id, req.user.company_id);
     ok(res, invoice);
   } catch (err) {
-    if (err.code) return fail(res, err.message, httpStatus(err.code));
+    if (err.code || err.statusCode) return fail(res, err.message, httpStatus(err));
     next(err);
   }
 }
