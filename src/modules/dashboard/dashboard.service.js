@@ -203,12 +203,27 @@ export async function getInvoicingSummary(companyId) {
  * @param {number} companyId
  */
 export async function getFullDashboard({ from, to } = {}, companyId) {
-  const [sales, inventory, workorders, invoicing] = await Promise.all([
+  const [sales, inventory, workorders, invoicing, usersCountRes, totalSalesCountRes, companyRes] = await Promise.all([
     getSalesSummary({ from, to }, companyId),
     getInventorySummary(companyId),
     getWorkOrdersSummary(companyId),
     getInvoicingSummary(companyId),
+    pool.query(`SELECT COUNT(*)::INTEGER AS count FROM users WHERE company_id = $1 AND is_active = true`, [companyId]),
+    pool.query(`SELECT COUNT(*)::INTEGER AS count FROM sales WHERE company_id = $1 AND status = 'completed'`, [companyId]),
+    pool.query(`SELECT ruc, logo_data FROM companies WHERE id = $1`, [companyId]),
   ]);
 
-  return { sales, inventory, workorders, invoicing };
+  const activeUsersCount = usersCountRes.rows[0]?.count ?? 0;
+  const allTimeSalesCount = totalSalesCountRes.rows[0]?.count ?? 0;
+  const companyData = companyRes.rows[0] ?? {};
+
+  const onboarding = {
+    has_ruc: Boolean(companyData.ruc),
+    has_logo: Boolean(companyData.logo_data),
+    active_users_count: activeUsersCount,
+    total_active_products: inventory.total_active_products ?? 0,
+    all_time_sales_count: allTimeSalesCount,
+  };
+
+  return { sales, inventory, workorders, invoicing, onboarding };
 }

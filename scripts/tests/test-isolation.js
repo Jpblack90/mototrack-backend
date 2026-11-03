@@ -648,6 +648,52 @@ async function run() {
     );
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Caso 16: Aislamiento del Onboarding (/api/auth/register-company)
+    // ─────────────────────────────────────────────────────────────────────────
+    console.log('--- Caso 16: Aislamiento de taller registrado vía Onboarding ---');
+    const c16Email = `taller.isolation.${Date.now()}@mototrack.local`;
+    const rRegisterC = await request('/auth/register-company', {
+      method: 'POST',
+      body: {
+        razon_social: '[PRUEBA] Taller C Aislamiento',
+        admin_name: 'Admin Taller C',
+        email: c16Email,
+        password: 'Password123!',
+        accept_terms: true,
+      },
+    });
+
+    assert(rRegisterC.status === 201, 'Taller C registrado exitosamente vía onboarding (201)');
+    const tokenC = rRegisterC.data?.data?.token;
+    const companyCId = rRegisterC.data?.data?.user?.company_id;
+
+    // C intenta leer el producto de A -> 404
+    const rCReadA = await request(`/inventory/${companyA.productId}`, {
+      headers: { Authorization: `Bearer ${tokenC}` },
+    });
+    assert(
+      rCReadA.status === 404,
+      'Nuevo taller C recibe 404 al intentar acceder a producto de Taller A'
+    );
+
+    // C intenta leer usuario de B -> 404
+    const rCReadUserB = await request(`/users/${companyB.adminId}`, {
+      headers: { Authorization: `Bearer ${tokenC}` },
+    });
+    assert(
+      rCReadUserB.status === 404,
+      'Nuevo taller C recibe 404 al intentar acceder a usuario de Taller B'
+    );
+
+    // Desactivar Taller C
+    if (companyCId) {
+      await pool.query(
+        `UPDATE companies SET is_active = false WHERE id = $1 AND razon_social LIKE '[PRUEBA]%'`,
+        [companyCId]
+      );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // VERIFICACIÓN FINAL: EMPRESA REAL INTACTA
     // ─────────────────────────────────────────────────────────────────────────
     if (realCompanyId && initialRealCounts) {

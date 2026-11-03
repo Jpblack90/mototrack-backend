@@ -41,7 +41,7 @@ export async function authenticate(req, res, next) {
   try {
     const { rows } = await pool.query(
       `SELECT u.id, u.name, u.email, u.role, u.is_active AS user_active, u.company_id, u.must_change_password,
-              c.is_active AS company_active, c.status AS company_status
+              c.is_active AS company_active, c.status AS company_status, c.trial_ends_at
        FROM users u
        JOIN companies c ON c.id = u.company_id
        WHERE u.id = $1 AND u.company_id = $2`,
@@ -62,6 +62,16 @@ export async function authenticate(req, res, next) {
         error: {
           message: 'La empresa asociada se encuentra inactiva o suspendida.',
           code: 'COMPANY_INACTIVE',
+        },
+      });
+    }
+
+    if (user.company_status === 'trial' && user.trial_ends_at && new Date(user.trial_ends_at) < new Date()) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          message: 'Tu periodo de prueba terminó. Contáctanos para activar tu plan.',
+          code: 'TRIAL_EXPIRED',
         },
       });
     }

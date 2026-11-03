@@ -14,7 +14,8 @@
     "test:isolation": "node scripts/tests/test-isolation.js",
     "test:company": "node scripts/tests/verify-11-2b.js",
     "test:users": "node scripts/tests/verify-11-3.js",
-    "test:audit": "node scripts/tests/verify-11-4.js"
+    "test:audit": "node scripts/tests/verify-11-4.js",
+    "test:onboarding": "node scripts/tests/verify-11-5.js"
   },
   "keywords": [
     "mototrack",
@@ -30,6 +31,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "express-rate-limit": "^8.7.3",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.10.0",

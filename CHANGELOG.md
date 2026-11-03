@@ -4,6 +4,16 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Fase 11 - Tarea 11.5)
+- Migración `scripts/migrations/007_registro_talleres.sql`: agrega columnas `trial_ends_at TIMESTAMPTZ` y `terms_accepted_at TIMESTAMPTZ` a la tabla `companies` con retrocompatibilidad (NULL en empresas existentes para evitar expiración) (Jean Pool)
+- Endpoint público `POST /api/auth/register-company`: registro atómico transaccional de nuevos talleres con validación de RUC Módulo 11 opcional, unicidad de RUC y correo (409), política de contraseñas seguras, aceptación de términos (Ley 29733), creación de usuario admin con `must_change_password = false`, registro en `audit_logs` (company y user create) y emisión directa de JWT (Jean Pool)
+- Verificación de expiración de prueba en `authenticate.js` y `auth.service.js`: bloqueo con HTTP 403 `TRIAL_EXPIRED` cuando `status = 'trial'` y `trial_ends_at < now()` (Jean Pool)
+- Proyección de `trial_ends_at` y cálculo en tiempo real de `days_left` en `GET /api/company` (Jean Pool)
+- Proyección de métricas operativas de onboarding en `GET /api/dashboard` (`has_ruc`, `has_logo`, `active_users_count`, `total_active_products`, `all_time_sales_count`) para guiar la configuración inicial del taller (Jean Pool)
+- Rate limiting con `express-rate-limit` en endpoints de autenticación: `loginRateLimiter` (máximo 10 intentos fallidos cada 15 min por IP+email con HTTP 429) y `registerCompanyRateLimiter` (máximo 5 registros por hora por IP con HTTP 429) (Jean Pool)
+- Script de administración `scripts/activate-company.js <company_id>` para activar permanentemente talleres que adquieren su plan comercial, eliminando la fecha de expiración y auditando la activación (Jean Pool)
+- Caso 16 en `scripts/tests/test-isolation.js` validando expiración de periodo de prueba, bloqueo de endpoints protegidos y aislamiento de talleres en trial (Jean Pool)
+- Suite de pruebas automatizadas `scripts/tests/verify-11-5.js` (`npm run test:onboarding`) con 21 pruebas de registro, validaciones, rate limiting y ciclo de vida de prueba (Jean Pool)
 ### Added (Fase 11 - Tarea 11.4)
 - Migración `scripts/migrations/006_auditoria.sql`: tabla `audit_logs` con PK `BIGSERIAL`, `company_id NOT NULL REFERENCES companies`, `user_id REFERENCES users`, `entity`, `entity_id`, `action`, `changes JSONB`, `created_at TIMESTAMPTZ`, índices `(company_id, created_at DESC)` y `(company_id, entity, entity_id)`, y trigger `trg_audit_logs_immutable` para inmutabilidad estricta (bloquea UPDATE y DELETE) (Jean Pool)
 - Helper transaccional `src/shared/audit.js` con funciones `logAudit` y `diffObjects` para atomicidad estricta dentro de transacciones activas de PostgreSQL (Jean Pool)
@@ -166,7 +176,17 @@ Cada entrada indica el integrante responsable entre paréntesis.
 Cada vez que agreguen, cambien o arreglen algo en el proyecto, ANTES de hacer commit deben:
 
 1. Abrir este archivo (CHANGELOG.md).
-2. Buscar la sección ## [Unreleased] al inicio.
+2. Buscar la sección ## [Unreleased]
+### Added (Fase 11 - Tarea 11.5)
+- Migración `scripts/migrations/007_registro_talleres.sql`: agrega columnas `trial_ends_at TIMESTAMPTZ` y `terms_accepted_at TIMESTAMPTZ` a la tabla `companies` con retrocompatibilidad (NULL en empresas existentes para evitar expiración) (Jean Pool)
+- Endpoint público `POST /api/auth/register-company`: registro atómico transaccional de nuevos talleres con validación de RUC Módulo 11 opcional, unicidad de RUC y correo (409), política de contraseñas seguras, aceptación de términos (Ley 29733), creación de usuario admin con `must_change_password = false`, registro en `audit_logs` (company y user create) y emisión directa de JWT (Jean Pool)
+- Verificación de expiración de prueba en `authenticate.js` y `auth.service.js`: bloqueo con HTTP 403 `TRIAL_EXPIRED` cuando `status = 'trial'` y `trial_ends_at < now()` (Jean Pool)
+- Proyección de `trial_ends_at` y cálculo en tiempo real de `days_left` en `GET /api/company` (Jean Pool)
+- Proyección de métricas operativas de onboarding en `GET /api/dashboard` (`has_ruc`, `has_logo`, `active_users_count`, `total_active_products`, `all_time_sales_count`) para guiar la configuración inicial del taller (Jean Pool)
+- Rate limiting con `express-rate-limit` en endpoints de autenticación: `loginRateLimiter` (máximo 10 intentos fallidos cada 15 min por IP+email con HTTP 429) y `registerCompanyRateLimiter` (máximo 5 registros por hora por IP con HTTP 429) (Jean Pool)
+- Script de administración `scripts/activate-company.js <company_id>` para activar permanentemente talleres que adquieren su plan comercial, eliminando la fecha de expiración y auditando la activación (Jean Pool)
+- Caso 16 en `scripts/tests/test-isolation.js` validando expiración de periodo de prueba, bloqueo de endpoints protegidos y aislamiento de talleres en trial (Jean Pool)
+- Suite de pruebas automatizadas `scripts/tests/verify-11-5.js` (`npm run test:onboarding`) con 21 pruebas de registro, validaciones, rate limiting y ciclo de vida de prueba (Jean Pool) al inicio.
 3. Agregar su cambio con el formato correspondiente:
    - ### Added    → para funcionalidades nuevas
    - ### Changed  → para cambios en funcionalidad existente

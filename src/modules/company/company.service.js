@@ -37,7 +37,8 @@ export function validateSunatRuc(ruc) {
 export async function getById(companyId) {
   const result = await pool.query(
     `SELECT id, ruc, razon_social, nombre_comercial, direccion, telefono, email,
-            logo_data, igv_rate, approval_threshold, not_picked_up_days, status
+            logo_data, igv_rate, approval_threshold, not_picked_up_days, status,
+            trial_ends_at, terms_accepted_at
      FROM companies
      WHERE id = $1`,
     [companyId]
@@ -48,11 +49,18 @@ export async function getById(companyId) {
   }
 
   const row = result.rows[0];
+  let days_left = null;
+  if (row.status === 'trial' && row.trial_ends_at) {
+    const diffMs = new Date(row.trial_ends_at).getTime() - Date.now();
+    days_left = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+  }
+
   return {
     ...row,
     igv_rate: parseFloat(row.igv_rate),
     approval_threshold: parseFloat(row.approval_threshold),
     not_picked_up_days: parseInt(row.not_picked_up_days, 10),
+    days_left,
   };
 }
 

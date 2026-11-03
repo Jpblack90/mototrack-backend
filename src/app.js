@@ -8,6 +8,18 @@ import { errorHandler } from './shared/middlewares/errorHandler.js';
 
 const app = express();
 
+// Configuración de 'trust proxy' según variable de entorno (por defecto false para evitar spoofing de X-Forwarded-For)
+const trustProxyEnv = process.env.TRUST_PROXY;
+let trustProxySetting = false;
+if (trustProxyEnv === 'true') {
+  trustProxySetting = true;
+} else if (trustProxyEnv !== undefined && trustProxyEnv !== '' && !isNaN(Number(trustProxyEnv))) {
+  trustProxySetting = Number(trustProxyEnv);
+} else if (trustProxyEnv) {
+  trustProxySetting = trustProxyEnv;
+}
+app.set('trust proxy', trustProxySetting);
+
 // ── Middlewares globales ────────────────────────────────────────────────────
 app.use(helmet());
 app.use(cors());
