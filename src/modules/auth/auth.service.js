@@ -233,7 +233,7 @@ export async function registerCompany({
   try {
     await client.query('BEGIN');
 
-    // 1. Crear empresa con status 'trial', 14 días y términos aceptados
+    // 1. Crear empresa con status 'trial', 14 días, términos aceptados y plan_id 'mototrack'
     const { rows: compRows } = await client.query(
       `INSERT INTO companies (
          razon_social,
@@ -242,10 +242,14 @@ export async function registerCompany({
          status,
          trial_ends_at,
          terms_accepted_at,
-         is_active
+         is_active,
+         plan_id
        )
-       VALUES ($1, $2, $3, 'trial', NOW() + INTERVAL '14 days', NOW(), true)
-       RETURNING id, razon_social, nombre_comercial, ruc, status, trial_ends_at, terms_accepted_at`,
+       VALUES (
+         $1, $2, $3, 'trial', NOW() + INTERVAL '14 days', NOW(), true,
+         (SELECT id FROM plans WHERE code = 'mototrack' LIMIT 1)
+       )
+       RETURNING id, razon_social, nombre_comercial, ruc, status, trial_ends_at, terms_accepted_at, plan_id`,
       [sanitizedRazonSocial, sanitizedNombreComercial, sanitizedRuc]
     );
     const newCompany = compRows[0];

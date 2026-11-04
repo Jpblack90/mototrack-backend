@@ -694,6 +694,41 @@ async function run() {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Caso 17: Aislamiento en consumo de plan (/api/company/plan)
+    // ─────────────────────────────────────────────────────────────────────────
+    console.log('--- Caso 17: Aislamiento en consulta de plan (/api/company/plan) ---');
+
+    // 17a: Insertar escaneo de prueba para Empresa A
+    await pool.query(
+      `INSERT INTO ai_usage (company_id, user_id, model, input_tokens, output_tokens, thinking_tokens, latency_ms, success, estimated_cost_usd)
+       VALUES ($1, $2, 'gemini-3.5-flash-lite', 500, 100, 0, 1200, true, 0.0004)`,
+      [companyAId, companyA.adminId]
+    );
+
+    // 17b: Admin B consulta GET /api/company/plan
+    const c17 = await request('/company/plan', {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+
+    const { rows: countUsersB } = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM users WHERE company_id = $1 AND is_active = true`,
+      [companyBId]
+    );
+    const { rows: countScansB } = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM ai_usage WHERE company_id = $1 AND success = true`,
+      [companyBId]
+    );
+
+    const bPlanData = c17.data?.data;
+    assert(
+      c17.status === 200 &&
+      bPlanData?.users_active === countUsersB[0].count &&
+      bPlanData?.ai_scans_this_month === countScansB[0].count,
+      'El uso de B no cuenta escaneos ni usuarios de A (/api/company/plan aislado)',
+      `users_b: ${bPlanData?.users_active}, scans_b: ${bPlanData?.ai_scans_this_month}`
+    );
+
+    // ─────────────────────────────────────────────────────────────────────────
     // VERIFICACIÓN FINAL: EMPRESA REAL INTACTA
     // ─────────────────────────────────────────────────────────────────────────
     if (realCompanyId && initialRealCounts) {

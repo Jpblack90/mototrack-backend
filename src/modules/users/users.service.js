@@ -3,6 +3,7 @@ import pool from '../../config/database.js';
 import { AppError } from '../../shared/errors/AppError.js';
 import { validatePasswordPolicy } from '../../shared/utils/passwordPolicy.js';
 import { logAudit, diffObjects } from '../../shared/audit.js';
+import { getUsage } from '../plans/plan.service.js';
 
 const SALT_ROUNDS = 10;
 const VALID_ROLES = ['admin', 'cajero', 'almacenero', 'mecanico'];
@@ -31,6 +32,17 @@ export async function create({ name, email, password, role }, companyId, current
   const policy = validatePasswordPolicy(password);
   if (!policy.valid) {
     throw new AppError(policy.message, 'INVALID_PASSWORD', 422);
+  }
+
+  // Verificación de límite de usuarios activos del plan
+  const usage = await getUsage(companyId);
+  const maxUsers = usage.plan?.max_users;
+  if (maxUsers !== null && maxUsers !== undefined && usage.users_active >= maxUsers) {
+    throw new AppError(
+      `Tu plan permite hasta ${maxUsers} usuarios activos. Desactiva uno o contáctanos para ampliar.`,
+      'PLAN_LIMIT_REACHED',
+      403
+    );
   }
 
   const password_hash = await bcrypt.hash(password, SALT_ROUNDS);
@@ -165,6 +177,19 @@ export async function update(id, { name, role, is_active }, companyId, currentUs
       const activeAdmins = countRows[0]?.count ?? 0;
       if (activeAdmins <= 1) {
         throw new AppError('No se puede desactivar o cambiar de rol al único administrador activo de la empresa.', 'LAST_ADMIN_PROTECTED', 409);
+      }
+    }
+
+    // Regla 4: Al reactivar un usuario inactivo, validar límite de usuarios del plan
+    if (is_active === true && targetUser.is_active === false) {
+      const usage = await getUsage(companyId);
+      const maxUsers = usage.plan?.max_users;
+      if (maxUsers !== null && maxUsers !== undefined && usage.users_active >= maxUsers) {
+        throw new AppError(
+          `Tu plan permite hasta ${maxUsers} usuarios activos. Desactiva uno o contáctanos para ampliar.`,
+          'PLAN_LIMIT_REACHED',
+          403
+        );
       }
     }
 

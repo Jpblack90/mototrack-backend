@@ -5,6 +5,7 @@ import morgan from 'morgan';
 
 import apiRoutes from './routes/index.js';
 import { errorHandler } from './shared/middlewares/errorHandler.js';
+import { getAiHealthStatus } from './modules/inventory/inventory.aiClient.js';
 
 const app = express();
 
@@ -29,7 +30,11 @@ app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
 // ── Health check ────────────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    ai: getAiHealthStatus(),
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // ── Rutas de la API ─────────────────────────────────────────────────────────

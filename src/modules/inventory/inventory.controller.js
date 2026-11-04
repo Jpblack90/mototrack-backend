@@ -1,5 +1,6 @@
 import * as inventoryService from './inventory.service.js';
 import { analyzeProductImage } from './inventory.aiClient.js';
+import { getUsage } from '../plans/plan.service.js';
 
 // ─── Formato de respuesta uniforme ───────────────────────────────────────────
 
@@ -133,10 +134,26 @@ export async function scanProduct(req, res, next) {
       return fail(res, 'Imagen demasiado grande (máximo 10 MB).', 422);
     }
 
-    // Llamada a Gemini — puede lanzar AppError AI_SERVICE_ERROR
+    // Verificación de límite de escaneos IA del plan — ANTES de llamar a Gemini
+    if (req.user?.company_id) {
+      const usage = await getUsage(req.user.company_id);
+      const maxScans = usage.plan?.max_ai_scans_month;
+      if (maxScans !== null && maxScans !== undefined && usage.ai_scans_this_month >= maxScans) {
+        return fail(
+          res,
+          `Alcanzaste los ${maxScans} escaneos con IA de este mes. Puedes seguir registrando productos manualmente; el cupo se renueva el día 1.`,
+          403,
+          'PLAN_LIMIT_REACHED'
+        );
+      }
+    }
+
+    // Llamada a Gemini pasando tenant y usuario para métricas de consumo
     const result = await analyzeProductImage({
       imageBase64: image_base64,
       mimeType:    mime_type,
+      companyId:   req.user?.company_id,
+      userId:      req.user?.id,
     });
 
     ok(res, {
@@ -162,8 +179,14 @@ export async function scanProduct(req, res, next) {
       },
     });
   } catch (err) {
-    if (err.code === 'AI_TIMEOUT') return fail(res, err.message, 503, 'AI_TIMEOUT');
-    if (err.code === 'AI_SERVICE_ERROR') return fail(res, err.message, 503, 'AI_SERVICE_ERROR');
+    if (
+      err.code === 'AI_TIMEOUT' ||
+      err.code === 'AI_NOT_CONFIGURED' ||
+      err.code === 'AI_QUOTA' ||
+      err.code === 'AI_SERVICE_ERROR'
+    ) {
+      return fail(res, err.message, err.statusCode || 503, err.code);
+    }
     next(err);
   }
 }

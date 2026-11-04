@@ -1,18 +1,107 @@
 import { GoogleGenAI } from '@google/genai';
+import pool from '../../config/database.js';
+import { AppError } from '../../shared/errors/AppError.js';
 import { PRODUCT_CATEGORIES } from './inventory.service.js';
 
 // ─── Cliente Gemini ───────────────────────────────────────────────────────────
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// ─── Error controlado ─────────────────────────────────────────────────────────
+// ─── Estado de Diagnóstico de la IA ───────────────────────────────────────────
 
-class AppError extends Error {
-  constructor(message, code, statusCode = 400) {
-    super(message);
-    this.code = code;
-    this.statusCode = statusCode;
+let aiHealthStatus = 'unknown'; // 'ok' | 'invalid_key' | 'unconfigured' | 'unknown'
+
+/**
+ * Devuelve el estado de diagnóstico actual del servicio de IA
+ * @returns {'ok' | 'invalid_key' | 'unconfigured' | 'unknown'}
+ */
+export function getAiHealthStatus() {
+  return aiHealthStatus;
+}
+
+// ─── Mapeo Puro de Errores de Gemini (Tarea 12.0) ──────────────────────────────
+
+/**
+ * Función pura que categoriza cualquier error de Google Gemini o red
+ * y devuelve un código, status HTTP y mensaje amigable para el usuario sin datos técnicos.
+ *
+ * @param {Error|any} err Objeto de error capturado
+ * @returns {{ code: string, status: number, userMessage: string }}
+ */
+export function mapGeminiError(err) {
+  if (!err) {
+    return {
+      code: 'AI_SERVICE_ERROR',
+      status: 503,
+      userMessage: 'El servicio de IA no está disponible en este momento. Registra el producto manualmente.',
+    };
   }
+
+  const status = Number(err.status || err.statusCode || (typeof err.code === 'number' ? err.code : 0));
+  const codeStr = String(err.code || '');
+  const messageStr = String(err.message || '');
+  const errBodyStr = typeof err.errorDetails === 'string'
+    ? err.errorDetails
+    : (err.errorDetails ? JSON.stringify(err.errorDetails) : '');
+  const combined = `${codeStr} ${messageStr} ${errBodyStr}`.toLowerCase();
+
+  // 1. Timeout
+  if (
+    codeStr === 'AI_TIMEOUT' ||
+    err.name === 'TimeoutError' ||
+    combined.includes('ai_timeout') ||
+    combined.includes('demasiado') ||
+    combined.includes('timed out')
+  ) {
+    return {
+      code: 'AI_TIMEOUT',
+      status: 503,
+      userMessage: 'La IA tardó demasiado. Registra el producto manualmente.',
+    };
+  }
+
+  // 2. Clave inválida o vencida (401/403 de Google, API_KEY_INVALID, UNAUTHENTICATED)
+  if (
+    status === 401 ||
+    status === 403 ||
+    codeStr === 'API_KEY_INVALID' ||
+    codeStr === 'UNAUTHENTICATED' ||
+    combined.includes('api_key_invalid') ||
+    combined.includes('unauthenticated') ||
+    combined.includes('api key not valid') ||
+    combined.includes('key expired') ||
+    combined.includes('permission_denied')
+  ) {
+    return {
+      code: 'AI_NOT_CONFIGURED',
+      status: 503,
+      userMessage: 'El escaneo con IA no está disponible por el momento. Registra el producto manualmente.',
+    };
+  }
+
+  // 3. Cuota de Google agotada (429, RESOURCE_EXHAUSTED)
+  if (
+    status === 429 ||
+    codeStr === 'RESOURCE_EXHAUSTED' ||
+    codeStr === '429' ||
+    combined.includes('resource_exhausted') ||
+    combined.includes('quota exceeded') ||
+    combined.includes('rate limit') ||
+    combined.includes('exhausted')
+  ) {
+    return {
+      code: 'AI_QUOTA',
+      status: 503,
+      userMessage: 'La IA está saturada en este momento. Intenta en unos minutos o registra el producto manualmente.',
+    };
+  }
+
+  // 4. Cualquier otro fallo
+  return {
+    code: 'AI_SERVICE_ERROR',
+    status: 503,
+    userMessage: 'El servicio de IA no está disponible en este momento. Registra el producto manualmente.',
+  };
 }
 
 // ─── Prompt de análisis ───────────────────────────────────────────────────────
@@ -39,44 +128,99 @@ Si dice "Oil Filter", escribe "Filtro de Aceite". Si dice "Brake Pads", escribe 
 
 Responde ÚNICAMENTE con el objeto JSON requerido por el schema, sin texto adicional.`;
 
-// ─── Precalentamiento de conexión ─────────────────────────────────────────────
+// ─── Precalentamiento de conexión (warm-up) ───────────────────────────────────
 
 /**
- * Fuerza el handshake TLS/DNS con la API de Gemini durante el arranque del servidor.
- * Se llama en server.js sin await para no bloquear app.listen().
- *
- * Si falla (API key no configurada, sin red, etc.) solo loguea —
- * NUNCA debe tumbar el proceso de arranque.
+ * Fuerza el handshake TLS/DNS y valida la credencial de Gemini durante el arranque del servidor.
  */
 export async function warmUp() {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey.trim() === '') {
+    aiHealthStatus = 'unconfigured';
+    console.error('❌ [IA] GEMINI_API_KEY no está configurada: el escaneo con IA no funcionará.');
+    return;
+  }
+
   try {
     await ai.models.generateContent({
       model: 'gemini-3.5-flash-lite',
       contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
       config: { thinkingConfig: { thinkingLevel: 'minimal' } },
     });
-    console.log('🔥  Gemini warm-up completado.');
+    aiHealthStatus = 'ok';
+    console.log('🔥 Gemini warm-up completado');
   } catch (err) {
-    // Fallo silencioso — el servidor arranca igual
-    console.warn(`⚠️   Gemini warm-up falló (${err.message ?? 'error desconocido'}). La primera llamada real puede ser más lenta.`);
+    const mapped = mapGeminiError(err);
+    if (mapped.code === 'AI_NOT_CONFIGURED') {
+      aiHealthStatus = 'invalid_key';
+      console.error('❌ [IA] GEMINI_API_KEY inválida o vencida');
+    } else {
+      aiHealthStatus = 'unknown';
+      console.error(`❌ [IA] Gemini warm-up falló: ${err.message ?? 'error desconocido'}`);
+    }
+  }
+}
+
+// ─── Registro de consumo de IA ────────────────────────────────────────────────
+
+async function recordAiUsage({
+  companyId,
+  userId,
+  model,
+  inputTokens = 0,
+  outputTokens = 0,
+  thinkingTokens = 0,
+  latencyMs = 0,
+  success,
+  errorCode = null,
+}) {
+  if (!companyId) return;
+
+  try {
+    const priceInputPerM = Number(process.env.AI_PRICE_INPUT_PER_M) || 0.30;
+    const priceOutputPerM = Number(process.env.AI_PRICE_OUTPUT_PER_M) || 2.50;
+
+    const costInput = (inputTokens / 1_000_000) * priceInputPerM;
+    const totalOutputTokens = outputTokens + thinkingTokens;
+    const costOutput = (totalOutputTokens / 1_000_000) * priceOutputPerM;
+    const estimatedCostUsd = Number((costInput + costOutput).toFixed(6));
+
+    await pool.query(
+      `INSERT INTO ai_usage (
+        company_id, user_id, model, input_tokens, output_tokens,
+        thinking_tokens, latency_ms, success, error_code, estimated_cost_usd
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        companyId,
+        userId ?? null,
+        model,
+        inputTokens,
+        outputTokens,
+        thinkingTokens,
+        latencyMs,
+        success,
+        errorCode,
+        estimatedCostUsd,
+      ]
+    );
+  } catch (err) {
+    // Si falla el INSERT, solo se loguea pero NO rompe la respuesta
+    console.error('❌ [IA] Error al registrar métricas en ai_usage:', err.message);
   }
 }
 
 // ─── Función principal ────────────────────────────────────────────────────────
 
 /**
- * Analiza la imagen de un repuesto de motocicleta con Gemini.
+ * Analiza la imagen de un repuesto de motocicleta con Gemini y registra consumo por empresa.
  *
- * ⚠️  PUNTO DE INTEGRACIÓN REAL — llama a la API de Google Gemini.
- *     Si la API no está disponible, lanza AppError AI_SERVICE_ERROR
- *     para que el usuario pueda registrar el producto manualmente (RF-02).
- *
- * @param {{ imageBase64: string, mimeType: string }} param
- * @returns {{ detected_name: string, detected_brand: string, confidence: number, latency_ms: number }}
+ * @param {{ imageBase64: string, mimeType: string, companyId?: number, userId?: number }} param
+ * @returns {Promise<{ detected_name: string, detected_brand: string, confidence: number, latency_ms: number }>}
  */
-export async function analyzeProductImage({ imageBase64, mimeType }) {
+export async function analyzeProductImage({ imageBase64, mimeType, companyId, userId }) {
   const start = Date.now();
-  const timeoutMs = Number(process.env.AI_TIMEOUT_MS) || 10000;
+  const timeoutMs = Number(process.env.AI_TIMEOUT_MS) || 15000;
+  const model = 'gemini-3.5-flash-lite';
   let timer;
 
   const timeoutPromise = new Promise((_, reject) => {
@@ -87,7 +231,7 @@ export async function analyzeProductImage({ imageBase64, mimeType }) {
 
   try {
     const generatePromise = ai.models.generateContent({
-      model: 'gemini-3.5-flash-lite',   // ← cambiado desde 'gemini-3.6-flash' para cumplir RF-01 (<4s)
+      model,
       contents: [
         {
           role: 'user',
@@ -103,10 +247,6 @@ export async function analyzeProductImage({ imageBase64, mimeType }) {
         },
       ],
       config: {
-        // thinkingConfig con nivel mínimo (SDK v2.22.0):
-        // "minimal" = mínimo razonamiento interno; suficiente para clasificación
-        // de imagen simple. Los modelos 3.5+ usan thinkingLevel en lugar de
-        // thinkingBudget (que está deprecated para esta familia de modelos).
         thinkingConfig: {
           thinkingLevel: 'minimal',
         },
@@ -145,7 +285,23 @@ export async function analyzeProductImage({ imageBase64, mimeType }) {
     const response = await Promise.race([generatePromise, timeoutPromise]);
     const latency_ms = Date.now() - start;
 
-    // El SDK garantiza JSON válido cuando se usa responseMimeType + responseSchema
+    const input_tokens = response.usageMetadata?.promptTokenCount ?? 0;
+    const output_tokens = response.usageMetadata?.candidatesTokenCount ?? 0;
+    const thinking_tokens = response.usageMetadata?.thoughtsTokenCount ?? 0;
+
+    // Registro no bloqueante de consumo exitoso
+    await recordAiUsage({
+      companyId,
+      userId,
+      model,
+      inputTokens: input_tokens,
+      outputTokens: output_tokens,
+      thinkingTokens: thinking_tokens,
+      latencyMs: latency_ms,
+      success: true,
+      errorCode: null,
+    });
+
     const parsed = JSON.parse(response.text);
 
     return {
@@ -161,17 +317,31 @@ export async function analyzeProductImage({ imageBase64, mimeType }) {
     };
 
   } catch (err) {
-    if (err.code === 'AI_TIMEOUT') {
-      throw err;
-    }
-    // Cualquier fallo de la API (red, cuota, key inválida, timeout) se convierte
-    // en un AppError controlado. El endpoint lo traduce a 503 y recomienda RF-02.
-    throw new AppError(
-      `El servicio de IA no está disponible en este momento (${err.message ?? 'error desconocido'}). ` +
-      'Usa el registro manual (RF-02) para agregar el producto mientras se resuelve.',
-      'AI_SERVICE_ERROR',
-      503
-    );
+    const latency_ms = Date.now() - start;
+    const mapped = mapGeminiError(err);
+
+    // El detalle técnico de Google SOLO se imprime en la consola del servidor con prefijo [IA]
+    console.error('[IA] Detalle técnico de Google Gemini:', {
+      status: err.status || err.statusCode,
+      message: err.message,
+      code: err.code,
+      errorDetails: err.errorDetails,
+    });
+
+    // Registro no bloqueante del intento fallido
+    await recordAiUsage({
+      companyId,
+      userId,
+      model,
+      inputTokens: 0,
+      outputTokens: 0,
+      thinkingTokens: 0,
+      latencyMs: latency_ms,
+      success: false,
+      errorCode: mapped.code,
+    });
+
+    throw new AppError(mapped.userMessage, mapped.code, mapped.status);
   } finally {
     clearTimeout(timer);
   }

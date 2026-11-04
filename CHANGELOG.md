@@ -4,6 +4,24 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Fase 12 - Tarea 12.1)
+- Migración `scripts/migrations/009_planes.sql`: tabla `plans` (id SERIAL PK, code VARCHAR(30) UNIQUE NOT NULL, name VARCHAR(60) NOT NULL, price_pen NUMERIC(10,2) NOT NULL, max_users INTEGER, max_ai_scans_month INTEGER, features JSONB NOT NULL DEFAULT '{}', is_active BOOLEAN DEFAULT true, created_at) con semilla oficial 'mototrack' (S/ 99.00/mes, 10 usuarios, 1000 escaneos IA/mes, features {"whatsapp": true}) y asignación obligatoria en `companies.plan_id NOT NULL REFERENCES plans(id)` (Jean Pool)
+- Módulo `src/modules/plans/plan.service.js` con función `getUsage(companyId)` que calcula el periodo mensual en huso horario `America/Lima`, cuenta escaneos exitosos en `ai_usage` (`ai_scans_this_month`) y usuarios activos (`users_active`), proyectando estado comercial sin exponer métricas internas de costos en USD ni tokens de IA (Jean Pool)
+- Endpoint `GET /api/company/plan`: accesible para cualquier rol autenticado de la empresa, devuelve la información del plan comercial y consumo acumulado en el periodo actual (Jean Pool)
+- Control de límites de plan en backend con respuesta HTTP 403 y código uniforme `PLAN_LIMIT_REACHED`:
+  - `POST /api/inventory/scan`: validación previa antes de invocar a Gemini; si se alcanza `max_ai_scans_month` rechaza con mensaje amigable informando la renovación el día 1 sin generar consumo en `ai_usage` (Jean Pool)
+  - Creación y reactivación de usuarios en `src/modules/users/users.service.js`: si se alcanza `max_users` activos se bloquea con 403 informando el límite del plan (Jean Pool)
+- Asignación automática del plan oficial 'mototrack' en el flujo de registro público `POST /api/auth/register-company` (Jean Pool)
+- Caso 17 en `scripts/tests/test-isolation.js` verificando que el consumo y consultas de `/api/company/plan` de una empresa permanecen 100% aislados de las demás (Jean Pool)
+- Suite de verificación integral `scripts/tests/verify-12-1.js` (`npm run test:plans`) con 10 pruebas automatizadas cubriendo no cómputo de escaneos fallidos, bloqueo previo a Gemini al superar cupo, límite de usuarios activos, endpoint `/api/company/plan` y protección estricta de privacidad (Jean Pool)
+
+### Added (Fase 12 - Tarea 12.0)
+- Migración `scripts/migrations/008_ai_usage.sql`: creación de tabla `ai_usage` (id BIGSERIAL PK, company_id NOT NULL FK, user_id FK, model, input_tokens, output_tokens, thinking_tokens, latency_ms, success, error_code, estimated_cost_usd, created_at) con índice compuesto `(company_id, created_at)` para medición granular de consumo (Jean Pool)
+- Función pura `mapGeminiError(err)` en `src/modules/inventory/inventory.aiClient.js` que clasifica y sanitiza errores de Gemini (`AI_NOT_CONFIGURED` para claves inválidas/vencidas, `AI_QUOTA` para límite 429/RESOURCE_EXHAUSTED, `AI_TIMEOUT` para demoras y `AI_SERVICE_ERROR` para fallos genéricos) garantizando que ninguna traza de infraestructura o credencial de Google se exponga al usuario (Jean Pool)
+- Diagnóstico del servicio en `warmUp()` con registro de estados (`ok`, `invalid_key`, `unconfigured`, `unknown`) y exposición de `ai` en `GET /api/health` (Jean Pool)
+- Registro no bloqueante de consumo de tokens y estimación de costos en USD por escaneo en `ai_usage`, cobrando tokens de pensamiento (`thinking_tokens`) como salida en base a variables de entorno `AI_PRICE_INPUT_PER_M` y `AI_PRICE_OUTPUT_PER_M` (Jean Pool)
+- Script administrativo `scripts/ai-usage-report.js [YYYY-MM]` para consolidación mensual de escaneos, tokens y costos por taller en huso horario `America/Lima` (Jean Pool)
+- Suite de pruebas automatizadas `scripts/tests/verify-12-0.js` (`npm run test:ai`) con validación unitaria de sanitización y prueba de integración de escaneo real con imagen (Jean Pool)
 ### Added (Fase 11 - Tarea 11.5)
 - Migración `scripts/migrations/007_registro_talleres.sql`: agrega columnas `trial_ends_at TIMESTAMPTZ` y `terms_accepted_at TIMESTAMPTZ` a la tabla `companies` con retrocompatibilidad (NULL en empresas existentes para evitar expiración) (Jean Pool)
 - Endpoint público `POST /api/auth/register-company`: registro atómico transaccional de nuevos talleres con validación de RUC Módulo 11 opcional, unicidad de RUC y correo (409), política de contraseñas seguras, aceptación de términos (Ley 29733), creación de usuario admin con `must_change_password = false`, registro en `audit_logs` (company y user create) y emisión directa de JWT (Jean Pool)
@@ -177,6 +195,24 @@ Cada vez que agreguen, cambien o arreglen algo en el proyecto, ANTES de hacer co
 
 1. Abrir este archivo (CHANGELOG.md).
 2. Buscar la sección ## [Unreleased]
+### Added (Fase 12 - Tarea 12.1)
+- Migración `scripts/migrations/009_planes.sql`: tabla `plans` (id SERIAL PK, code VARCHAR(30) UNIQUE NOT NULL, name VARCHAR(60) NOT NULL, price_pen NUMERIC(10,2) NOT NULL, max_users INTEGER, max_ai_scans_month INTEGER, features JSONB NOT NULL DEFAULT '{}', is_active BOOLEAN DEFAULT true, created_at) con semilla oficial 'mototrack' (S/ 99.00/mes, 10 usuarios, 1000 escaneos IA/mes, features {"whatsapp": true}) y asignación obligatoria en `companies.plan_id NOT NULL REFERENCES plans(id)` (Jean Pool)
+- Módulo `src/modules/plans/plan.service.js` con función `getUsage(companyId)` que calcula el periodo mensual en huso horario `America/Lima`, cuenta escaneos exitosos en `ai_usage` (`ai_scans_this_month`) y usuarios activos (`users_active`), proyectando estado comercial sin exponer métricas internas de costos en USD ni tokens de IA (Jean Pool)
+- Endpoint `GET /api/company/plan`: accesible para cualquier rol autenticado de la empresa, devuelve la información del plan comercial y consumo acumulado en el periodo actual (Jean Pool)
+- Control de límites de plan en backend con respuesta HTTP 403 y código uniforme `PLAN_LIMIT_REACHED`:
+  - `POST /api/inventory/scan`: validación previa antes de invocar a Gemini; si se alcanza `max_ai_scans_month` rechaza con mensaje amigable informando la renovación el día 1 sin generar consumo en `ai_usage` (Jean Pool)
+  - Creación y reactivación de usuarios en `src/modules/users/users.service.js`: si se alcanza `max_users` activos se bloquea con 403 informando el límite del plan (Jean Pool)
+- Asignación automática del plan oficial 'mototrack' en el flujo de registro público `POST /api/auth/register-company` (Jean Pool)
+- Caso 17 en `scripts/tests/test-isolation.js` verificando que el consumo y consultas de `/api/company/plan` de una empresa permanecen 100% aislados de las demás (Jean Pool)
+- Suite de verificación integral `scripts/tests/verify-12-1.js` (`npm run test:plans`) con 10 pruebas automatizadas cubriendo no cómputo de escaneos fallidos, bloqueo previo a Gemini al superar cupo, límite de usuarios activos, endpoint `/api/company/plan` y protección estricta de privacidad (Jean Pool)
+
+### Added (Fase 12 - Tarea 12.0)
+- Migración `scripts/migrations/008_ai_usage.sql`: creación de tabla `ai_usage` (id BIGSERIAL PK, company_id NOT NULL FK, user_id FK, model, input_tokens, output_tokens, thinking_tokens, latency_ms, success, error_code, estimated_cost_usd, created_at) con índice compuesto `(company_id, created_at)` para medición granular de consumo (Jean Pool)
+- Función pura `mapGeminiError(err)` en `src/modules/inventory/inventory.aiClient.js` que clasifica y sanitiza errores de Gemini (`AI_NOT_CONFIGURED` para claves inválidas/vencidas, `AI_QUOTA` para límite 429/RESOURCE_EXHAUSTED, `AI_TIMEOUT` para demoras y `AI_SERVICE_ERROR` para fallos genéricos) garantizando que ninguna traza de infraestructura o credencial de Google se exponga al usuario (Jean Pool)
+- Diagnóstico del servicio en `warmUp()` con registro de estados (`ok`, `invalid_key`, `unconfigured`, `unknown`) y exposición de `ai` en `GET /api/health` (Jean Pool)
+- Registro no bloqueante de consumo de tokens y estimación de costos en USD por escaneo en `ai_usage`, cobrando tokens de pensamiento (`thinking_tokens`) como salida en base a variables de entorno `AI_PRICE_INPUT_PER_M` y `AI_PRICE_OUTPUT_PER_M` (Jean Pool)
+- Script administrativo `scripts/ai-usage-report.js [YYYY-MM]` para consolidación mensual de escaneos, tokens y costos por taller en huso horario `America/Lima` (Jean Pool)
+- Suite de pruebas automatizadas `scripts/tests/verify-12-0.js` (`npm run test:ai`) con validación unitaria de sanitización y prueba de integración de escaneo real con imagen (Jean Pool)
 ### Added (Fase 11 - Tarea 11.5)
 - Migración `scripts/migrations/007_registro_talleres.sql`: agrega columnas `trial_ends_at TIMESTAMPTZ` y `terms_accepted_at TIMESTAMPTZ` a la tabla `companies` con retrocompatibilidad (NULL en empresas existentes para evitar expiración) (Jean Pool)
 - Endpoint público `POST /api/auth/register-company`: registro atómico transaccional de nuevos talleres con validación de RUC Módulo 11 opcional, unicidad de RUC y correo (409), política de contraseñas seguras, aceptación de términos (Ley 29733), creación de usuario admin con `must_change_password = false`, registro en `audit_logs` (company y user create) y emisión directa de JWT (Jean Pool)
