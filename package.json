@@ -17,7 +17,9 @@
     "test:audit": "node scripts/tests/verify-11-4.js",
     "test:onboarding": "node scripts/tests/verify-11-5.js",
     "test:ai": "node scripts/tests/verify-12-0.js",
-    "test:plans": "node scripts/tests/verify-12-1.js"
+    "test:plans": "node scripts/tests/verify-12-1.js",
+    "test:payments": "node scripts/tests/verify-12-2.js",
+    "test:credit-notes": "node scripts/tests/verify-12-3.js"
   },
   "keywords": [
     "mototrack",

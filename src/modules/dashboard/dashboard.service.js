@@ -57,18 +57,20 @@ export async function getSalesSummary({ from, to } = {}, companyId) {
     [companyId, dateFrom, dateTo]
   );
 
-  // Desglose por método de pago
+  // Desglose por método de pago (RF-24: calculado desde sale_payments)
   const { rows: byPayment } = await pool.query(
     `SELECT
-       payment_method,
+       sp.method               AS payment_method,
        COUNT(*)::INTEGER       AS count,
-       COALESCE(SUM(total), 0) AS revenue
-     FROM sales
-     WHERE company_id = $1
-       AND status     = 'completed'
-       AND created_at >= $2
-       AND created_at <= $3
-     GROUP BY payment_method
+       COALESCE(SUM(sp.amount), 0) AS revenue
+     FROM sale_payments sp
+     JOIN sales s ON s.id = sp.sale_id
+     WHERE sp.company_id = $1
+       AND s.company_id  = $1
+       AND s.status      = 'completed'
+       AND s.created_at >= $2
+       AND s.created_at <= $3
+     GROUP BY sp.method
      ORDER BY revenue DESC`,
     [companyId, dateFrom, dateTo]
   );
@@ -172,10 +174,29 @@ export async function getWorkOrdersSummary(companyId) {
 }
 
 /**
- * Resumen de facturación de la empresa: conteo por estado y lista de comprobantes en contingencia.
- * @param {number} companyId
+ * Resumen de facturación de la empresa: conteo por estado, comprobantes en contingencia
+ * y notas de crédito emitidas en el periodo (RF-23).
+ *
+ * @param {number|object} companyIdOrOptions
+ * @param {object|number} optionsOrCompanyId
  */
-export async function getInvoicingSummary(companyId) {
+export async function getInvoicingSummary(companyIdOrOptions, optionsOrCompanyId) {
+  let companyId;
+  let from;
+  let to;
+
+  if (typeof companyIdOrOptions === 'number') {
+    companyId = companyIdOrOptions;
+    from = optionsOrCompanyId?.from;
+    to = optionsOrCompanyId?.to;
+  } else {
+    companyId = optionsOrCompanyId;
+    from = companyIdOrOptions?.from;
+    to = companyIdOrOptions?.to;
+  }
+
+  const { dateFrom, dateTo } = resolveDateRange(from, to);
+
   // Conteo de comprobantes por estado
   const { rows: byEstado } = await pool.query(
     `SELECT estado, COUNT(*)::INTEGER AS count
@@ -189,9 +210,26 @@ export async function getInvoicingSummary(companyId) {
   // Reutilización directa — misma función, misma query, mismo resultado
   const pendingContingency = await getPendingContingency(companyId);
 
+  // Notas de crédito del periodo
+  const { rows: ncRows } = await pool.query(
+    `SELECT
+       COUNT(*)::INTEGER       AS count,
+       COALESCE(SUM(total), 0) AS total
+     FROM credit_notes
+     WHERE company_id = $1
+       AND estado     = 'accepted'
+       AND created_at >= $2
+       AND created_at <= $3`,
+    [companyId, dateFrom, dateTo]
+  );
+
   return {
     by_estado:           byEstado,
     pending_contingency: pendingContingency,
+    credit_notes: {
+      count: ncRows[0]?.count ?? 0,
+      total: ncRows[0]?.total ?? 0,
+    },
   };
 }
 
@@ -207,7 +245,7 @@ export async function getFullDashboard({ from, to } = {}, companyId) {
     getSalesSummary({ from, to }, companyId),
     getInventorySummary(companyId),
     getWorkOrdersSummary(companyId),
-    getInvoicingSummary(companyId),
+    getInvoicingSummary({ from, to }, companyId),
     pool.query(`SELECT COUNT(*)::INTEGER AS count FROM users WHERE company_id = $1 AND is_active = true`, [companyId]),
     pool.query(`SELECT COUNT(*)::INTEGER AS count FROM sales WHERE company_id = $1 AND status = 'completed'`, [companyId]),
     pool.query(`SELECT ruc, logo_data FROM companies WHERE id = $1`, [companyId]),

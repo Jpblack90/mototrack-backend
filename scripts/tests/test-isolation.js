@@ -68,8 +68,10 @@ async function safeClearTestTransactions(companyId) {
     );
     process.exit(1);
   }
+  await pool.query(`DELETE FROM credit_notes WHERE company_id = $1`, [companyId]);
   await pool.query(`DELETE FROM invoices WHERE company_id = $1`, [companyId]);
   await pool.query(`DELETE FROM invoice_series WHERE company_id = $1`, [companyId]);
+  await pool.query(`DELETE FROM sale_payments WHERE company_id = $1`, [companyId]);
   await pool.query(
     `DELETE FROM sale_items WHERE sale_id IN (SELECT id FROM sales WHERE company_id = $1)`,
     [companyId]
@@ -451,6 +453,36 @@ async function run() {
       `API B count=${dashSalesB.total_sales_count}, DB B count=${bSalesDb[0].count}, DB A count=${aSalesDb[0].count}`
     );
 
+    console.log('--- Caso 1d: Los pagos de B no aparecen en el dashboard de A (RF-24) ---');
+    const c10A = await request('/dashboard', {
+      headers: { Authorization: `Bearer ${tokenA}` },
+    });
+    const dashPaymentsA = c10A.data?.data?.sales?.revenue_by_payment_method || [];
+    const totalPaymentsRevenueA = dashPaymentsA.reduce((sum, p) => sum + Number(p.revenue), 0);
+
+    const { rows: aPaymentsDb } = await pool.query(
+      `SELECT COALESCE(SUM(sp.amount), 0)::NUMERIC AS revenue
+       FROM sale_payments sp
+       JOIN sales s ON s.id = sp.sale_id
+       WHERE sp.company_id = $1 AND s.status = 'completed' AND s.created_at >= $2 AND s.created_at <= $3`,
+      [companyAId, c10A.data?.data?.sales?.period?.from, c10A.data?.data?.sales?.period?.to]
+    );
+
+    const { rows: bPaymentsInADb } = await pool.query(
+      `SELECT COUNT(*)::INTEGER AS count
+       FROM sale_payments sp
+       WHERE sp.company_id = $1 AND sp.sale_id IN (SELECT id FROM sales WHERE company_id = $2)`,
+      [companyAId, companyBId]
+    );
+
+    assert(
+      c10A.status === 200 &&
+        Number(totalPaymentsRevenueA) === Number(aPaymentsDb[0].revenue) &&
+        Number(bPaymentsInADb[0].count) === 0,
+      'Los pagos de B no aparecen en el dashboard de A',
+      `Dash A revenue=${totalPaymentsRevenueA}, DB A revenue=${aPaymentsDb[0].revenue}, Cross-payments=${bPaymentsInADb[0].count}`
+    );
+
     console.log('--- Caso 11: Usuario de empresa inactiva (is_active = false) intenta login -> 403 ---');
     await pool.query(`UPDATE companies SET is_active = false WHERE id = $1`, [companyBId]);
     const c11 = await request('/auth/login', {
@@ -726,6 +758,76 @@ async function run() {
       bPlanData?.ai_scans_this_month === countScansB[0].count,
       'El uso de B no cuenta escaneos ni usuarios de A (/api/company/plan aislado)',
       `users_b: ${bPlanData?.users_active}, scans_b: ${bPlanData?.ai_scans_this_month}`
+    );
+
+    // ─────────────────────────────────────────────────────────────────────────
+    console.log('--- Caso 18: Aislamiento en Notas de Crédito (/api/invoicing/credit-notes) ---');
+
+    // 18a: Crear una venta y boleta aceptada en Empresa A
+    const { rows: saleARows } = await pool.query(
+      `INSERT INTO sales (company_id, total, subtotal, igv, igv_rate, payment_method, status, customer_name)
+       VALUES ($1, 50.00, 42.37, 7.63, 0.18, 'efectivo', 'completed', '[PRUEBA] Cliente NC A')
+       RETURNING id`,
+      [companyAId]
+    );
+    const saleAId = saleARows[0].id;
+    await pool.query(
+      `INSERT INTO sale_payments (company_id, sale_id, method, amount)
+       VALUES ($1, $2, 'efectivo', 50.00)`,
+      [companyAId, saleAId]
+    );
+    const { rows: invARows } = await pool.query(
+      `INSERT INTO invoices (company_id, sale_id, comprobante_type, serie, numero, estado, xml_content)
+       VALUES ($1, $2, 'boleta', 'B001', 999, 'accepted', '<xml>test</xml>')
+       RETURNING id`,
+      [companyAId, saleAId]
+    );
+    const invAId = invARows[0].id;
+
+    // 18b: Anular la venta con voidSale en Empresa A (genera NC en A)
+    const voidRes = await request(`/sales/${saleAId}/void`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${tokenA}` },
+      body: { void_reason: 'Anulación de prueba para aislamiento', motivo_code: '01' },
+    });
+    const ncA = voidRes.data?.data?.credit_note;
+    assert(
+      voidRes.status === 200 && ncA?.id != null,
+      'Empresa A anula su venta y genera Nota de Crédito en A',
+      `status: ${voidRes.status}, nc_id: ${ncA?.id}`
+    );
+
+    // 18c: Empresa B lista notas de crédito -> la NC de A NO debe aparecer
+    const listBRes = await request('/invoicing/credit-notes', {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    const bCreditNotes = listBRes.data?.data ?? [];
+    const ncAInB = bCreditNotes.some((nc) => nc.id === ncA.id || nc.company_id === companyAId);
+    assert(
+      listBRes.status === 200 && !ncAInB,
+      'Empresa B no ve la Nota de Crédito de Empresa A en su listado (/api/invoicing/credit-notes)',
+      `total_b: ${bCreditNotes.length}`
+    );
+
+    // 18d: Empresa B intenta ver el ticket de la NC de A -> 404
+    const ticketBRes = await request(`/invoicing/credit-notes/${ncA.id}/ticket`, {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    assert(
+      ticketBRes.status === 404,
+      'Empresa B no puede ver el ticket de la NC de Empresa A (retorna 404)',
+      `status: ${ticketBRes.status}`
+    );
+
+    // 18e: Empresa B intenta reintentar la NC de A -> 404
+    const retryBRes = await request(`/invoicing/credit-notes/${ncA.id}/retry`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    assert(
+      retryBRes.status === 404,
+      'Empresa B no puede reintentar la NC de Empresa A (retorna 404)',
+      `status: ${retryBRes.status}`
     );
 
     // ─────────────────────────────────────────────────────────────────────────

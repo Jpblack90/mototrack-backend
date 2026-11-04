@@ -15,6 +15,7 @@ function httpStatus(err) {
   const map = {
     SALE_NOT_FOUND:               404,
     INVOICE_NOT_FOUND:            404,
+    CREDIT_NOTE_NOT_FOUND:        404,
     CANNOT_INVOICE_VOIDED_SALE:   422,
     NOTHING_TO_RETRY:             422,
     MISSING_FIELD:                422,
@@ -114,6 +115,44 @@ export async function retryContingency(req, res, next) {
   try {
     const invoice = await svc.retryContingency(req.params.id, req.user.company_id, req.user?.id ?? null);
     ok(res, invoice);
+  } catch (err) {
+    if (err.code || err.statusCode) return fail(res, err.message, httpStatus(err));
+    next(err);
+  }
+}
+
+/**
+ * GET /api/invoicing/credit-notes
+ */
+export async function listCreditNotes(req, res, next) {
+  try {
+    const list = await svc.listCreditNotes(req.user.company_id);
+    ok(res, list);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/invoicing/credit-notes/:id/ticket
+ */
+export async function getCreditNoteTicket(req, res, next) {
+  try {
+    const ticket = await svc.getCreditNoteTicketData(req.params.id, req.user.company_id);
+    ok(res, ticket);
+  } catch (err) {
+    if (err.code || err.statusCode) return fail(res, err.message, httpStatus(err));
+    next(err);
+  }
+}
+
+/**
+ * PATCH /api/invoicing/credit-notes/:id/retry
+ */
+export async function retryCreditNoteContingency(req, res, next) {
+  try {
+    const cn = await svc.retryCreditNoteContingency(req.params.id, req.user.company_id, req.user?.id ?? null);
+    ok(res, cn);
   } catch (err) {
     if (err.code || err.statusCode) return fail(res, err.message, httpStatus(err));
     next(err);

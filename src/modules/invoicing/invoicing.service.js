@@ -84,6 +84,61 @@ export function buildSimplifiedXml(sale, invoiceData, companyInfo = {}) {
 </comprobante>`;
 }
 
+/**
+ * Construye un XML simplificado para la Nota de Crédito.
+ *
+ * @param {object} param0
+ * @param {object} param0.sale       Fila de sales con items expandidos
+ * @param {object} param0.invoice    Fila de invoices que se modifica
+ * @param {object} param0.ncData     { serie, numero, motivo_code, motivo_descripcion }
+ * @param {object} param0.company    { ruc, razon_social, direccion }
+ * @returns {string}
+ */
+export function buildCreditNoteXml({ sale, invoice, ncData, company = {} }) {
+  const itemsXml = (sale.items ?? [])
+    .map(
+      (item) => `
+    <item>
+      <description>${escapeXml(item.product_name ?? item.kit_name ?? item.description ?? 'Ítem')}</description>
+      <quantity>${item.quantity}</quantity>
+      <unitPrice>${item.unit_price}</unitPrice>
+      <subtotal>${item.subtotal}</subtotal>
+    </item>`
+    )
+    .join('');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<comprobante xmlns:mototrack="urn:mototrack:simplified:1.0">
+  <tipo>nota_credito</tipo>
+  <serie>${ncData.serie}</serie>
+  <numero>${ncData.numero}</numero>
+  <fechaEmision>${new Date().toISOString()}</fechaEmision>
+  <emisor>
+    <ruc>${company.ruc ?? ''}</ruc>
+    <razonSocial>${escapeXml(company.razon_social ?? company.name ?? '')}</razonSocial>
+    <direccion>${escapeXml(company.direccion ?? company.address ?? '')}</direccion>
+  </emisor>
+  <receptor>
+    <tipoDocumento>${invoice.customer_document_type ?? ''}</tipoDocumento>
+    <numeroDocumento>${invoice.customer_document_number ?? ''}</numeroDocumento>
+  </receptor>
+  <documentoModificado>
+    <tipoDoc>${invoice.comprobante_type}</tipoDoc>
+    <serie>${invoice.serie}</serie>
+    <numero>${invoice.numero}</numero>
+  </documentoModificado>
+  <motivoCodigo>${ncData.motivo_code}</motivoCodigo>
+  <motivoDescripcion>${escapeXml(ncData.motivo_descripcion)}</motivoDescripcion>
+  <items>${itemsXml}
+  </items>
+  <totales>
+    <subtotal>${sale.subtotal}</subtotal>
+    <igv>${sale.igv}</igv>
+    <total>${sale.total}</total>
+  </totales>
+</comprobante>`;
+}
+
 // ─── Servicio de Facturación ──────────────────────────────────────────────────
 
 /**
@@ -397,18 +452,44 @@ export async function getAll({ estado } = {}, companyId) {
 
   if (estado && estado.trim() !== '') {
     query = `
-      SELECT i.*, s.total AS sale_total, s.customer_name
+      SELECT i.*, s.total AS sale_total, s.customer_name,
+             CASE
+               WHEN cn.id IS NOT NULL THEN json_build_object(
+                 'id', cn.id,
+                 'serie', cn.serie,
+                 'numero', cn.numero,
+                 'estado', cn.estado,
+                 'motivo_code', cn.motivo_code,
+                 'motivo_descripcion', cn.motivo_descripcion,
+                 'created_at', cn.created_at
+               )
+               ELSE NULL
+             END AS credit_note
       FROM   invoices i
-      JOIN   sales    s ON s.id = i.sale_id
+      JOIN   sales    s  ON s.id = i.sale_id
+      LEFT JOIN credit_notes cn ON cn.invoice_id = i.id AND cn.company_id = i.company_id
       WHERE  i.company_id = $1 AND i.estado = $2
       ORDER  BY i.id ASC
     `;
     params = [companyId, estado.trim()];
   } else {
     query = `
-      SELECT i.*, s.total AS sale_total, s.customer_name
+      SELECT i.*, s.total AS sale_total, s.customer_name,
+             CASE
+               WHEN cn.id IS NOT NULL THEN json_build_object(
+                 'id', cn.id,
+                 'serie', cn.serie,
+                 'numero', cn.numero,
+                 'estado', cn.estado,
+                 'motivo_code', cn.motivo_code,
+                 'motivo_descripcion', cn.motivo_descripcion,
+                 'created_at', cn.created_at
+               )
+               ELSE NULL
+             END AS credit_note
       FROM   invoices i
-      JOIN   sales    s ON s.id = i.sale_id
+      JOIN   sales    s  ON s.id = i.sale_id
+      LEFT JOIN credit_notes cn ON cn.invoice_id = i.id AND cn.company_id = i.company_id
       WHERE  i.company_id = $1
       ORDER  BY i.id ASC
     `;
@@ -453,6 +534,15 @@ export async function getTicketData(id, companyId) {
     [inv.sale_id]
   );
 
+  // Traer pagos de la venta (RF-24)
+  const { rows: payments } = await pool.query(
+    `SELECT method, amount, reference, cash_received, change_given
+     FROM   sale_payments
+     WHERE  sale_id = $1 AND company_id = $2
+     ORDER  BY id ASC`,
+    [inv.sale_id, companyId]
+  );
+
   return {
     business: {
       name:             inv.comp_nombre_comercial || inv.comp_razon_social || 'MotoTrack',
@@ -478,6 +568,7 @@ export async function getTicketData(id, companyId) {
     sale: {
       date:           inv.sale_date,
       payment_method: inv.payment_method,
+      payments,
       items,
       subtotal:       inv.subtotal,
       igv:            inv.igv,
@@ -485,4 +576,187 @@ export async function getTicketData(id, companyId) {
       igv_rate:       inv.igv_rate != null ? parseFloat(inv.igv_rate) : 0.18,
     },
   };
+}
+
+/**
+ * Lista todas las notas de crédito de la empresa.
+ * @param {number} companyId
+ */
+export async function listCreditNotes(companyId) {
+  const { rows } = await pool.query(
+    `SELECT cn.*,
+            i.serie AS invoice_serie, i.numero AS invoice_numero, i.comprobante_type,
+            s.customer_name
+     FROM   credit_notes cn
+     JOIN   invoices     i  ON i.id = cn.invoice_id
+     JOIN   sales        s  ON s.id = cn.sale_id
+     WHERE  cn.company_id = $1
+     ORDER  BY cn.id DESC`,
+    [companyId]
+  );
+  return rows;
+}
+
+/**
+ * Retorna los datos estructurados del ticket de la Nota de Crédito.
+ * @param {number|string} id  ID de la credit_note
+ * @param {number} companyId
+ */
+export async function getCreditNoteTicketData(id, companyId) {
+  const { rows } = await pool.query(
+    `SELECT cn.*,
+            i.serie AS inv_serie, i.numero AS inv_numero, i.comprobante_type AS inv_type,
+            i.customer_document_type, i.customer_document_number,
+            s.total, s.subtotal, s.igv, s.igv_rate, s.customer_name, s.payment_method,
+            s.created_at AS sale_date,
+            c.ruc AS comp_ruc, c.razon_social AS comp_razon_social,
+            c.nombre_comercial AS comp_nombre_comercial, c.direccion AS comp_direccion,
+            c.telefono AS comp_telefono, c.logo_data AS comp_logo_data
+     FROM   credit_notes cn
+     JOIN   invoices     i  ON i.id = cn.invoice_id
+     JOIN   sales        s  ON s.id = cn.sale_id
+     JOIN   companies    c  ON c.id = cn.company_id
+     WHERE  cn.id = $1 AND cn.company_id = $2`,
+    [id, companyId]
+  );
+  if (!rows[0]) throw new AppError(`Nota de crédito #${id} no encontrada.`, 'CREDIT_NOTE_NOT_FOUND', 404);
+  const cn = rows[0];
+
+  const { rows: items } = await pool.query(
+    `SELECT
+       si.quantity, si.unit_price, si.subtotal,
+       COALESCE(p.name, k.name) AS description
+     FROM   sale_items si
+     LEFT JOIN products p ON p.id = si.product_id
+     LEFT JOIN kits     k ON k.id = si.kit_id
+     WHERE  si.sale_id = $1
+     ORDER  BY si.id ASC`,
+    [cn.sale_id]
+  );
+
+  const { rows: payments } = await pool.query(
+    `SELECT method, amount, reference, cash_received, change_given
+     FROM   sale_payments
+     WHERE  sale_id = $1 AND company_id = $2
+     ORDER  BY id ASC`,
+    [cn.sale_id, companyId]
+  );
+
+  return {
+    business: {
+      name:             cn.comp_nombre_comercial || cn.comp_razon_social || 'MotoTrack',
+      razon_social:     cn.comp_razon_social,
+      nombre_comercial: cn.comp_nombre_comercial,
+      ruc:              cn.comp_ruc,
+      address:          cn.comp_direccion,
+      phone:            cn.comp_telefono,
+      logo_data:        cn.comp_logo_data,
+    },
+    credit_note: {
+      id:                 cn.id,
+      serie:              cn.serie,
+      numero:             cn.numero,
+      estado:             cn.estado,
+      motivo_code:        cn.motivo_code,
+      motivo_descripcion: cn.motivo_descripcion,
+      created_at:         cn.created_at,
+    },
+    modified_document: {
+      type:   cn.inv_type,
+      serie:  cn.inv_serie,
+      numero: cn.inv_numero,
+    },
+    customer: {
+      name:            cn.customer_name ?? 'Consumidor Final',
+      document_type:   cn.customer_document_type,
+      document_number: cn.customer_document_number,
+    },
+    sale: {
+      date:           cn.sale_date,
+      payment_method: cn.payment_method,
+      payments,
+      items,
+      subtotal:       cn.subtotal,
+      igv:            cn.igv,
+      total:          cn.total,
+      igv_rate:       cn.igv_rate != null ? parseFloat(cn.igv_rate) : 0.18,
+    },
+  };
+}
+
+/**
+ * Reintenta el envío de una Nota de Crédito en contingencia.
+ * @param {number|string} id  ID de la credit_note
+ * @param {number} companyId
+ * @param {number} userId
+ */
+export async function retryCreditNoteContingency(id, companyId, userId = null) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
+      `SELECT * FROM credit_notes WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [id, companyId]
+    );
+    if (!rows[0]) {
+      throw new AppError(`Nota de crédito #${id} no encontrada.`, 'CREDIT_NOTE_NOT_FOUND', 404);
+    }
+    const cn = rows[0];
+
+    if (cn.estado !== 'contingency') {
+      throw new AppError(
+        `La nota de crédito #${id} tiene estado '${cn.estado}'. Solo se pueden reintentar notas de crédito en contingencia.`,
+        'NOTHING_TO_RETRY',
+        422
+      );
+    }
+
+    let updatedCn;
+    try {
+      const pseResult = await sendComprobante({ xml: cn.xml_content, simulatePseDown: false });
+
+      const { rows: updated } = await client.query(
+        `UPDATE credit_notes
+         SET estado = 'accepted', cdr_response = $1, updated_at = NOW()
+         WHERE id = $2 AND company_id = $3
+         RETURNING *`,
+        [JSON.stringify(pseResult.cdr), id, companyId]
+      );
+      updatedCn = updated[0];
+
+    } catch (pseErr) {
+      if (pseErr.code === 'PSE_UNAVAILABLE') {
+        const { rows: updated } = await client.query(
+          `UPDATE credit_notes
+           SET cdr_response = $1, updated_at = NOW()
+           WHERE id = $2 AND company_id = $3
+           RETURNING *`,
+          [JSON.stringify({ error: pseErr.message, retried_at: new Date().toISOString() }), id, companyId]
+        );
+        updatedCn = updated[0];
+      } else {
+        throw pseErr;
+      }
+    }
+
+    await logAudit(client, {
+      companyId,
+      userId,
+      entity: 'credit_note',
+      entityId: Number(id),
+      action: 'retry_contingency',
+      changes: {
+        estado: { old: 'contingency', new: updatedCn.estado },
+      },
+    });
+
+    await client.query('COMMIT');
+    return updatedCn;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
