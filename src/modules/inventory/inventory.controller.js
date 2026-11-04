@@ -21,13 +21,47 @@ const fail = (res, message, status = 400, code = undefined) =>
 
 /**
  * GET /api/inventory
- * GET /api/inventory?search=filtro
+ * GET /api/inventory?search=filtro&compatible_with=modelo&stock_status=low|out
  */
 export async function getAllItems(req, res, next) {
   try {
-    const { search } = req.query;
-    const items = await inventoryService.getAll({ search }, req.user.company_id);
+    const { search, compatible_with, stock_status } = req.query;
+    const items = await inventoryService.getAll(
+      { search, compatible_with, stock_status },
+      req.user.company_id
+    );
     ok(res, items);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/inventory/alerts
+ * Solo admin, cajero y almacenero
+ */
+export async function getAlerts(req, res, next) {
+  try {
+    const alerts = await inventoryService.getAlerts(req.user.company_id);
+    ok(res, alerts);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/inventory/:id/alternatives
+ * GET /api/inventory/:id/alternatives?compatible_with=modelo
+ */
+export async function getAlternatives(req, res, next) {
+  try {
+    const alternatives = await inventoryService.getAlternatives(
+      req.params.id,
+      req.user.company_id,
+      { compatible_with: req.query.compatible_with }
+    );
+    if (alternatives === null) return fail(res, 'Producto no encontrado.', 404);
+    ok(res, alternatives);
   } catch (err) {
     next(err);
   }

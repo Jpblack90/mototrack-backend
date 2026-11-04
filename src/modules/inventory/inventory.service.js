@@ -1,5 +1,8 @@
 import pool from '../../config/database.js';
 import { logAudit, diffObjects } from '../../shared/audit.js';
+import { normalizeModel } from '../../shared/utils/modelNormalizer.js';
+
+export { normalizeModel };
 
 // ─── Categorías oficiales de productos ────────────────────────────────────────
 
@@ -118,46 +121,195 @@ function calcMargin(sale_price, cost_price) {
 
 /**
  * Retorna todos los productos activos.
- * Si se pasa `search`, filtra por name o sku con ILIKE.
+ * Filtra por `search` (name, sku, brand, category, compatible_models),
+ * `compatible_with` (búsqueda normalizada en compatible_models) y
+ * `stock_status` ('low': 0 < stock <= min_stock; 'out': stock = 0).
  *
- * @param {{ search?: string }} options
+ * @param {{ search?: string, compatible_with?: string, stock_status?: string }} options
+ * @param {number} companyId
  */
-export async function getAll({ search } = {}, companyId) {
-  let query;
-  let params;
+export async function getAll({ search, compatible_with, stock_status } = {}, companyId) {
+  const conditions = ['is_active = true', 'company_id = $1'];
+  const params = [companyId];
+  let paramIdx = 2;
 
   if (search && search.trim() !== '') {
     const pattern = `%${search.trim()}%`;
-    query = `
-      SELECT *
-      FROM   products
-      WHERE  is_active = true
-        AND  company_id = $1
-        AND  (
-          name ILIKE $2
-          OR sku ILIKE $2
-          OR brand ILIKE $2
-          OR category ILIKE $2
-          OR array_to_string(compatible_models, ' ') ILIKE $2
-        )
-      ORDER  BY id ASC
-    `;
-    params = [companyId, pattern];
-  } else {
-    query = `
-      SELECT *
-      FROM   products
-      WHERE  is_active = true
-        AND  company_id = $1
-      ORDER  BY id ASC
-    `;
-    params = [companyId];
+    conditions.push(`(
+      name ILIKE $${paramIdx}
+      OR sku ILIKE $${paramIdx}
+      OR brand ILIKE $${paramIdx}
+      OR category ILIKE $${paramIdx}
+      OR array_to_string(compatible_models, ' ') ILIKE $${paramIdx}
+    )`);
+    params.push(pattern);
+    paramIdx++;
   }
+
+  if (compatible_with && compatible_with.trim() !== '') {
+    conditions.push(`EXISTS (
+      SELECT 1 FROM unnest(compatible_models) AS m
+      WHERE regexp_replace(lower(m), '[^a-z0-9]', '', 'g') = regexp_replace(lower($${paramIdx}), '[^a-z0-9]', '', 'g')
+    )`);
+    params.push(compatible_with.trim());
+    paramIdx++;
+  }
+
+  if (stock_status === 'low') {
+    conditions.push('stock > 0 AND stock <= min_stock');
+  } else if (stock_status === 'out') {
+    conditions.push('stock = 0');
+  }
+
+  const query = `
+    SELECT *
+    FROM   products
+    WHERE  ${conditions.join(' AND ')}
+    ORDER  BY id ASC
+  `;
 
   const { rows } = await pool.query(query, params);
 
   // Añade el margen calculado a cada fila en la respuesta
   return rows.map((p) => ({ ...p, margin: calcMargin(p.sale_price, p.cost_price) }));
+}
+
+/**
+ * Retorna las alertas de stock agrupadas en out_of_stock y low_stock para la empresa.
+ * Ordenadas por urgencia (agotados por min_stock DESC; stock bajo por stock ASC, min_stock DESC).
+ *
+ * @param {number} companyId
+ */
+export async function getAlerts(companyId) {
+  const outQuery = `
+    SELECT id, name, sku, stock, min_stock, category
+    FROM   products
+    WHERE  company_id = $1 AND is_active = true AND stock = 0
+    ORDER  BY min_stock DESC, name ASC
+  `;
+  const lowQuery = `
+    SELECT id, name, sku, stock, min_stock, category
+    FROM   products
+    WHERE  company_id = $1 AND is_active = true AND stock > 0 AND stock <= min_stock
+    ORDER  BY stock ASC, min_stock DESC, name ASC
+  `;
+
+  const [outRes, lowRes] = await Promise.all([
+    pool.query(outQuery, [companyId]),
+    pool.query(lowQuery, [companyId]),
+  ]);
+
+  const outOfStock = outRes.rows;
+  const lowStock = lowRes.rows;
+  const total = outOfStock.length + lowStock.length;
+
+  return {
+    out_of_stock: outOfStock,
+    low_stock: lowStock,
+    total_alerts: total,
+    total,
+  };
+}
+
+/**
+ * Retorna hasta 5 repuestos activos con stock > 0 alternativos al producto indicado.
+ * Misma categoría y priorizados por modelos compatibles compartidos (o con la moto del cliente).
+ * Si el producto original no tiene categoría:
+ *   - Si tiene modelos compatibles, busca por modelos compartidos.
+ *   - Si tampoco tiene modelos compatibles, devuelve lista vacía [].
+ *
+ * @param {number|string} id
+ * @param {number}        companyId
+ * @param {{ compatible_with?: string }} options
+ */
+export async function getAlternatives(id, companyId, { compatible_with } = {}) {
+  const orig = await getById(id, companyId);
+  if (!orig) return null;
+
+  const origCategory = orig.category;
+  const origModels = (orig.compatible_models || [])
+    .map(normalizeModel)
+    .filter(Boolean);
+  const clientModel = compatible_with ? normalizeModel(compatible_with) : null;
+
+  // Si no tiene categoría ni modelos compatibles -> lista vacía
+  if (!origCategory && origModels.length === 0) {
+    return [];
+  }
+
+  let query;
+  let params;
+
+  if (origCategory) {
+    query = `
+      SELECT id, name, sku, brand, category, sale_price, cost_price, stock, min_stock, compatible_models
+      FROM   products
+      WHERE  company_id = $1 AND id != $2 AND is_active = true AND stock > 0 AND category = $3
+    `;
+    params = [companyId, id, origCategory];
+  } else {
+    // Sin categoría pero con modelos compatibles: busca por modelos compartidos
+    query = `
+      SELECT id, name, sku, brand, category, sale_price, cost_price, stock, min_stock, compatible_models
+      FROM   products
+      WHERE  company_id = $1 AND id != $2 AND is_active = true AND stock > 0
+    `;
+    params = [companyId, id];
+  }
+
+  const { rows: candidates } = await pool.query(query, params);
+
+  const scored = [];
+  for (const cand of candidates) {
+    const candModels = (cand.compatible_models || []).map(normalizeModel).filter(Boolean);
+    const matchesClient = clientModel ? candModels.includes(clientModel) : false;
+    const sharedCount = origModels.length > 0
+      ? candModels.filter((m) => origModels.includes(m)).length
+      : 0;
+
+    // Si el original no tenía categoría, solo incluir si comparte al menos un modelo o coincide con la moto del cliente
+    if (!origCategory && sharedCount === 0 && !matchesClient) {
+      continue;
+    }
+
+    const item = {
+      id: cand.id,
+      name: cand.name,
+      sku: cand.sku,
+      brand: cand.brand,
+      category: cand.category,
+      sale_price: cand.sale_price,
+      stock: cand.stock,
+      min_stock: cand.min_stock,
+      compatible_models: cand.compatible_models,
+      margin: calcMargin(cand.sale_price, cand.cost_price),
+      matches_client: matchesClient,
+      shared_models_count: sharedCount,
+    };
+
+    if (compatible_with) {
+      item.is_compatible = Boolean(matchesClient);
+    }
+
+    scored.push(item);
+  }
+
+  scored.sort((a, b) => {
+    if (clientModel) {
+      if (a.matches_client !== b.matches_client) {
+        return a.matches_client ? -1 : 1;
+      }
+    }
+    if (b.shared_models_count !== a.shared_models_count) {
+      return b.shared_models_count - a.shared_models_count;
+    }
+    if (b.stock !== a.stock) {
+      return b.stock - a.stock;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  return scored.slice(0, 5);
 }
 
 /**
@@ -521,7 +673,7 @@ export async function remove(id, companyId, userId = null) {
 export async function decrementStock(client, productId, quantity, companyId) {
   // Bloquea la fila para evitar que otra transacción concurrente lea el mismo stock
   const { rows } = await client.query(
-    `SELECT id, name, stock FROM products WHERE id = $1 AND company_id = $2 AND is_active = true FOR UPDATE`,
+    `SELECT id, name, sku, stock, min_stock FROM products WHERE id = $1 AND company_id = $2 AND is_active = true FOR UPDATE`,
     [productId, companyId]
   );
 
@@ -533,7 +685,7 @@ export async function decrementStock(client, productId, quantity, companyId) {
     );
   }
 
-  const { name, stock } = rows[0];
+  const { id, name, sku, stock, min_stock } = rows[0];
 
   if (stock < quantity) {
     throw new AppError(
@@ -544,10 +696,21 @@ export async function decrementStock(client, productId, quantity, companyId) {
     );
   }
 
+  const newStock = stock - quantity;
+
   await client.query(
-    `UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id = $2 AND company_id = $3`,
-    [quantity, productId, companyId]
+    `UPDATE products SET stock = $1, updated_at = NOW() WHERE id = $2 AND company_id = $3`,
+    [newStock, productId, companyId]
   );
+
+  return {
+    id,
+    name,
+    sku,
+    stock_before: stock,
+    stock_after: newStock,
+    min_stock,
+  };
 }
 
 /**

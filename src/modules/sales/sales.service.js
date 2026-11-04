@@ -248,6 +248,9 @@ export async function createSale({ customer_name, work_order_id, payment_method,
     let subtotalTotal = 0;
 
     // b) Procesar cada ítem
+    // Mapa para registrar el stock antes y después de cada producto afectado en esta venta
+    const stockTracker = new Map();
+
     for (const item of items) {
       const qty = Number(item.quantity);
 
@@ -266,7 +269,19 @@ export async function createSale({ customer_name, work_order_id, payment_method,
         }
         const product = prodRows[0];
 
-        await decrementStock(client, product.id, qty, companyId);
+        const decRes = await decrementStock(client, product.id, qty, companyId);
+        if (!stockTracker.has(decRes.id)) {
+          stockTracker.set(decRes.id, {
+            id: decRes.id,
+            name: decRes.name,
+            sku: decRes.sku,
+            initial_stock: decRes.stock_before,
+            final_stock: decRes.stock_after,
+            min_stock: decRes.min_stock,
+          });
+        } else {
+          stockTracker.get(decRes.id).final_stock = decRes.stock_after;
+        }
 
         const unitPrice = Number(product.sale_price);
         const lineSubtotal = +(unitPrice * qty).toFixed(2);
@@ -309,7 +324,19 @@ export async function createSale({ customer_name, work_order_id, payment_method,
 
         // Descontar stock de cada componente
         for (const comp of components) {
-          await decrementStock(client, comp.product_id, comp.quantity * qty, companyId);
+          const compDecRes = await decrementStock(client, comp.product_id, comp.quantity * qty, companyId);
+          if (!stockTracker.has(compDecRes.id)) {
+            stockTracker.set(compDecRes.id, {
+              id: compDecRes.id,
+              name: compDecRes.name,
+              sku: compDecRes.sku,
+              initial_stock: compDecRes.stock_before,
+              final_stock: compDecRes.stock_after,
+              min_stock: compDecRes.min_stock,
+            });
+          } else {
+            stockTracker.get(compDecRes.id).final_stock = compDecRes.stock_after;
+          }
         }
 
         // Una sola línea de sale_items por kit vendido
@@ -323,6 +350,20 @@ export async function createSale({ customer_name, work_order_id, payment_method,
         );
 
         subtotalTotal += lineSubtotal;
+      }
+    }
+
+    // Calcular qué productos cruzaron el umbral de stock mínimo por efecto de ESTA venta
+    const stockAlerts = [];
+    for (const entry of stockTracker.values()) {
+      if (entry.initial_stock > entry.min_stock && entry.final_stock <= entry.min_stock) {
+        stockAlerts.push({
+          id: entry.id,
+          name: entry.name,
+          sku: entry.sku,
+          stock: entry.final_stock,
+          min_stock: entry.min_stock,
+        });
       }
     }
 
@@ -402,7 +443,7 @@ export async function createSale({ customer_name, work_order_id, payment_method,
     }
 
     await client.query('COMMIT');
-    return { ...updatedSale[0], payments: insertedPayments };
+    return { ...updatedSale[0], payments: insertedPayments, stock_alerts: stockAlerts };
 
   } catch (err) {
     await client.query('ROLLBACK');

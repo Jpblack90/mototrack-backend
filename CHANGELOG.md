@@ -4,6 +4,24 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Fase 12 - Tarea 12.4)
+- Módulo `src/shared/utils/modelNormalizer.js` con función `normalizeModel(str)` que normaliza nombres de motos a solo caracteres alfanuméricos en minúsculas (`toLowerCase().normalize('NFD').replace(/[^a-z0-9]/g, '')`), alineado con la expresión SQL `regexp_replace(lower(x), '[^a-z0-9]', '', 'g')` (Jean Pool)
+- Filtros avanzados en `GET /api/inventory` (`getAll` en `src/modules/inventory/inventory.service.js`):
+  - Filtro opcional `compatible_with=<modelo>`: busca productos cuyos `compatible_models` contengan el modelo indicado (comparación normalizada) (Jean Pool)
+  - Filtro opcional `stock_status=low|out`: filtra productos con stock bajo (`0 < stock <= min_stock`) o agotados (`stock = 0`) (Jean Pool)
+  - Ambos filtros 100% parametrizados y combinables con `search` (Jean Pool)
+- Endpoint `GET /api/inventory/alerts` (`getAlerts`):
+  - Restringido a roles `admin`, `cajero` y `almacenero` (rol `mecanico` responde HTTP 403 `FORBIDDEN`) (Jean Pool)
+  - Retorna `{ out_of_stock: [...], low_stock: [...], total_alerts, total }` con `id, name, sku, stock, min_stock, category` ordenados por urgencia (Jean Pool)
+- Endpoint `GET /api/inventory/:id/alternatives` (`getAlternatives`):
+  - Accesible para cualquier usuario autenticado, sugiere hasta 5 productos activos con stock > 0 de la misma empresa (Jean Pool)
+  - Prioriza por modelos compatibles compartidos (o compatibles con `?compatible_with=<modelo>`); si el producto original no tiene categoría (NULL), busca por modelos compartidos y si tampoco tiene modelos devuelve lista vacía `[]` (Jean Pool)
+- Cruce transaccional de umbrales en `createSale` (`src/modules/sales/sales.service.js`):
+  - `decrementStock` en `inventory.service.js` retorna `{ id, name, sku, stock_before, stock_after, min_stock }` (Jean Pool)
+  - `createSale` rastrea productos directos y componentes de kits, agregando en la respuesta `stock_alerts: [...]` únicamente para los repuestos que por efecto de la venta cruzaron el umbral (`initial_stock > min_stock && final_stock <= min_stock`), sin repetir productos que ya estaban en nivel crítico (Jean Pool)
+- Caso 19 en `scripts/tests/test-isolation.js` verificando el aislamiento multi-tenant estricto en `/api/inventory/alerts` y `/api/inventory/:id/alternatives` (Jean Pool)
+- Suite de pruebas automatizadas `scripts/tests/verify-12-4.js` (`npm run test:stock`) con 30 pruebas cubriendo normalización ("HONDA CG.125", "honda cg-125", "Honda  CG125"), filtros low/out, RBAC en alertas, sugerencia inteligente de alternativas y alertas de stock en ventas directas y kits (Jean Pool)
+
 ### Added (Fase 12 - Tarea 12.3)
 - Migración `scripts/migrations/011_notas_credito.sql`: creación de la tabla `credit_notes` (id SERIAL PK, company_id NOT NULL FK companies, invoice_id NOT NULL FK invoices UNIQUE, sale_id NOT NULL FK sales, serie VARCHAR(4) NOT NULL, numero INTEGER NOT NULL, motivo_code VARCHAR(2) NOT NULL CHECK ('01','02','06'), motivo_descripcion VARCHAR(250) NOT NULL, subtotal, igv, total NUMERIC(10,2) NOT NULL, xml_content TEXT, estado VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK ('pending','accepted','rejected','contingency'), cdr_response JSONB, created_by FK users, created_at, updated_at, UNIQUE (company_id, serie, numero), índices por `(company_id, created_at)` y `(sale_id)`) para soporte de Notas de Crédito Electrónicas Totales (RF-23) (Jean Pool)
 - Emisión atómica de Notas de Crédito Electrónicas en `src/modules/sales/sales.service.js` (`voidSale`):

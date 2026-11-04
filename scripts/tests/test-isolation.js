@@ -831,6 +831,46 @@ async function run() {
     );
 
     // ─────────────────────────────────────────────────────────────────────────
+    // CASO 19: AISLAMIENTO EN ALERTAS Y ALTERNATIVAS (RF-06, RF-21)
+    // ─────────────────────────────────────────────────────────────────────────
+    console.log('--- Caso 19: Aislamiento en /inventory/alerts y /inventory/:id/alternatives ---');
+
+    // 19a: Empresa B consulta /inventory/alerts -> no debe mostrar productos de Empresa A
+    const alertsBRes = await request('/inventory/alerts', {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    const bAlerts = alertsBRes.data?.data || { out_of_stock: [], low_stock: [] };
+    const allBAlertItems = [...(bAlerts.out_of_stock || []), ...(bAlerts.low_stock || [])];
+    const hasAInAlertsB = allBAlertItems.some((item) => item.id === companyA.productId);
+    assert(
+      alertsBRes.status === 200 && !hasAInAlertsB,
+      'Empresa B no ve productos de Empresa A en sus alertas de stock (/api/inventory/alerts)',
+      `status: ${alertsBRes.status}`
+    );
+
+    // 19b: Empresa B consulta alternativas para el producto de Empresa A -> 404
+    const altProductARes = await request(`/inventory/${companyA.productId}/alternatives`, {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    assert(
+      altProductARes.status === 404,
+      'Empresa B no puede consultar alternativas de un producto de Empresa A (retorna 404)',
+      `status: ${altProductARes.status}`
+    );
+
+    // 19c: Empresa B consulta alternativas para su propio producto -> ninguna alternativa es de Empresa A
+    const altProductBRes = await request(`/inventory/${companyB.productId}/alternatives`, {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    const bAlternatives = altProductBRes.data?.data || [];
+    const hasAInAltsB = bAlternatives.some((alt) => alt.id === companyA.productId);
+    assert(
+      altProductBRes.status === 200 && !hasAInAltsB,
+      'Las alternativas del producto de Empresa B nunca incluyen productos de Empresa A',
+      `status: ${altProductBRes.status}`
+    );
+
+    // ─────────────────────────────────────────────────────────────────────────
     // VERIFICACIÓN FINAL: EMPRESA REAL INTACTA
     // ─────────────────────────────────────────────────────────────────────────
     if (realCompanyId && initialRealCounts) {
