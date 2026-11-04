@@ -1,5 +1,4 @@
 import { GoogleGenAI } from '@google/genai';
-import pool from '../../config/database.js';
 import { AppError } from '../../shared/errors/AppError.js';
 import { PRODUCT_CATEGORIES } from './inventory.service.js';
 
@@ -161,65 +160,19 @@ export async function warmUp() {
   }
 }
 
-// ─── Registro de consumo de IA ────────────────────────────────────────────────
-
-async function recordAiUsage({
-  companyId,
-  userId,
-  model,
-  inputTokens = 0,
-  outputTokens = 0,
-  thinkingTokens = 0,
-  latencyMs = 0,
-  success,
-  errorCode = null,
-}) {
-  if (!companyId) return;
-
-  try {
-    const priceInputPerM = Number(process.env.AI_PRICE_INPUT_PER_M) || 0.30;
-    const priceOutputPerM = Number(process.env.AI_PRICE_OUTPUT_PER_M) || 2.50;
-
-    const costInput = (inputTokens / 1_000_000) * priceInputPerM;
-    const totalOutputTokens = outputTokens + thinkingTokens;
-    const costOutput = (totalOutputTokens / 1_000_000) * priceOutputPerM;
-    const estimatedCostUsd = Number((costInput + costOutput).toFixed(6));
-
-    await pool.query(
-      `INSERT INTO ai_usage (
-        company_id, user_id, model, input_tokens, output_tokens,
-        thinking_tokens, latency_ms, success, error_code, estimated_cost_usd
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [
-        companyId,
-        userId ?? null,
-        model,
-        inputTokens,
-        outputTokens,
-        thinkingTokens,
-        latencyMs,
-        success,
-        errorCode,
-        estimatedCostUsd,
-      ]
-    );
-  } catch (err) {
-    // Si falla el INSERT, solo se loguea pero NO rompe la respuesta
-    console.error('❌ [IA] Error al registrar métricas en ai_usage:', err.message);
-  }
-}
-
 // ─── Función principal ────────────────────────────────────────────────────────
 
 /**
- * Analiza la imagen de un repuesto de motocicleta con Gemini y registra consumo por empresa.
+ * Analiza la imagen de un repuesto de motocicleta con Google Gemini.
+ * Devuelve los datos extraídos del producto y los metadatos de uso de tokens / latencia.
+ * No interactúa con base de datos (Regla 1 de backend.md).
  *
- * @param {{ imageBase64: string, mimeType: string, companyId?: number, userId?: number }} param
- * @returns {Promise<{ detected_name: string, detected_brand: string, confidence: number, latency_ms: number }>}
+ * @param {{ imageBase64: string, mimeType: string }} param
+ * @returns {Promise<{ data: object, usage: object }>}
  */
-export async function analyzeProductImage({ imageBase64, mimeType, companyId, userId }) {
+export async function analyzeProductImage({ imageBase64, mimeType }) {
   const start = Date.now();
-  const timeoutMs = Number(process.env.AI_TIMEOUT_MS) || 15000;
+  const timeoutMs = Number(process.env.AI_TIMEOUT_MS) || 20000;
   const model = 'gemini-3.5-flash-lite';
   let timer;
 
@@ -289,22 +242,9 @@ export async function analyzeProductImage({ imageBase64, mimeType, companyId, us
     const output_tokens = response.usageMetadata?.candidatesTokenCount ?? 0;
     const thinking_tokens = response.usageMetadata?.thoughtsTokenCount ?? 0;
 
-    // Registro no bloqueante de consumo exitoso
-    await recordAiUsage({
-      companyId,
-      userId,
-      model,
-      inputTokens: input_tokens,
-      outputTokens: output_tokens,
-      thinkingTokens: thinking_tokens,
-      latencyMs: latency_ms,
-      success: true,
-      errorCode: null,
-    });
-
     const parsed = JSON.parse(response.text);
 
-    return {
+    const data = {
       detected_name:               parsed.detected_name  ?? '',
       detected_brand:              parsed.detected_brand ?? '',
       confidence:                  Number(parsed.confidence ?? 0),
@@ -315,6 +255,16 @@ export async function analyzeProductImage({ imageBase64, mimeType, companyId, us
       compatibility_source:        parsed.compatibility_source ?? 'ninguno',
       latency_ms,
     };
+
+    const usage = {
+      model,
+      inputTokens: input_tokens,
+      outputTokens: output_tokens,
+      thinkingTokens: thinking_tokens,
+      latencyMs: latency_ms,
+    };
+
+    return { data, usage };
 
   } catch (err) {
     const latency_ms = Date.now() - start;
@@ -328,20 +278,17 @@ export async function analyzeProductImage({ imageBase64, mimeType, companyId, us
       errorDetails: err.errorDetails,
     });
 
-    // Registro no bloqueante del intento fallido
-    await recordAiUsage({
-      companyId,
-      userId,
+    const appErr = new AppError(mapped.userMessage, mapped.code, mapped.status);
+    appErr.usage = {
       model,
       inputTokens: 0,
       outputTokens: 0,
       thinkingTokens: 0,
       latencyMs: latency_ms,
-      success: false,
       errorCode: mapped.code,
-    });
+    };
 
-    throw new AppError(mapped.userMessage, mapped.code, mapped.status);
+    throw appErr;
   } finally {
     clearTimeout(timer);
   }

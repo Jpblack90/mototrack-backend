@@ -1,5 +1,6 @@
 import pool from '../../config/database.js';
 import { AppError } from '../../shared/errors/AppError.js';
+import { countMonthlySuccessfulScans } from './aiUsage.service.js';
 
 /**
  * Calcula el rango del mes actual en la zona horaria America/Lima
@@ -71,16 +72,7 @@ export async function getUsage(companyId) {
 
   // 3. Conteo de escaneos IA exitosos en el mes actual en America/Lima
   const { from, to } = getLimaMonthRange();
-  const { rows: scanRows } = await pool.query(
-    `SELECT COUNT(*)::int AS count 
-     FROM ai_usage 
-     WHERE company_id = $1 
-       AND success = true 
-       AND created_at >= $2::timestamptz 
-       AND created_at < $3::timestamptz`,
-    [companyId, from, to]
-  );
-  const aiScansThisMonth = scanRows[0]?.count ?? 0;
+  const aiScansThisMonth = await countMonthlySuccessfulScans(companyId, from, to);
 
   // 4. Calcular días restantes de prueba si aplica
   let daysLeft = null;

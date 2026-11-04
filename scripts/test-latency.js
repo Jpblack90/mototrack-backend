@@ -9,11 +9,11 @@ const mimeType = 'image/png';
 console.log('Modelo: gemini-3.5-flash-lite | thinkingLevel: minimal\n');
 
 console.log('--- Medicion 1 ---');
-const r1 = await analyzeProductImage({ imageBase64, mimeType });
+const { data: r1 } = await analyzeProductImage({ imageBase64, mimeType });
 console.log(JSON.stringify({ medicion: 1, latency_ms: r1.latency_ms, detected_name: r1.detected_name, detected_brand: r1.detected_brand, confidence: r1.confidence }, null, 2));
 
 console.log('\n--- Medicion 2 ---');
-const r2 = await analyzeProductImage({ imageBase64, mimeType });
+const { data: r2 } = await analyzeProductImage({ imageBase64, mimeType });
 console.log(JSON.stringify({ medicion: 2, latency_ms: r2.latency_ms, detected_name: r2.detected_name, detected_brand: r2.detected_brand, confidence: r2.confidence }, null, 2));
 
 console.log('\n--- Resumen ---');

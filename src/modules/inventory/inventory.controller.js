@@ -1,6 +1,7 @@
 import * as inventoryService from './inventory.service.js';
 import { analyzeProductImage } from './inventory.aiClient.js';
 import { getUsage } from '../plans/plan.service.js';
+import { recordUsage } from '../plans/aiUsage.service.js';
 
 // ─── Formato de respuesta uniforme ───────────────────────────────────────────
 
@@ -134,9 +135,12 @@ export async function scanProduct(req, res, next) {
       return fail(res, 'Imagen demasiado grande (máximo 10 MB).', 422);
     }
 
+    const companyId = req.user?.company_id;
+    const userId = req.user?.id;
+
     // Verificación de límite de escaneos IA del plan — ANTES de llamar a Gemini
-    if (req.user?.company_id) {
-      const usage = await getUsage(req.user.company_id);
+    if (companyId) {
+      const usage = await getUsage(companyId);
       const maxScans = usage.plan?.max_ai_scans_month;
       if (maxScans !== null && maxScans !== undefined && usage.ai_scans_this_month >= maxScans) {
         return fail(
@@ -148,37 +152,68 @@ export async function scanProduct(req, res, next) {
       }
     }
 
-    // Llamada a Gemini pasando tenant y usuario para métricas de consumo
-    const result = await analyzeProductImage({
+    // Llamada a Gemini (función pura de IA sin SQL)
+    const { data, usage } = await analyzeProductImage({
       imageBase64: image_base64,
       mimeType:    mime_type,
-      companyId:   req.user?.company_id,
-      userId:      req.user?.id,
     });
 
+    // Registro de consumo exitoso en ai_usage mediante el servicio
+    if (companyId && usage) {
+      await recordUsage({
+        companyId,
+        userId,
+        model: usage.model,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        thinkingTokens: usage.thinkingTokens,
+        latencyMs: usage.latencyMs,
+        success: true,
+        errorCode: null,
+      });
+    }
+
     ok(res, {
-      detected_name:               result.detected_name,
-      detected_brand:              result.detected_brand,
-      confidence:                  result.confidence,
-      latency_ms:                  result.latency_ms,
+      detected_name:               data.detected_name,
+      detected_brand:              data.detected_brand,
+      confidence:                  data.confidence,
+      latency_ms:                  data.latency_ms,
       // Si confidence < 80 el frontend debe mostrar un aviso de confirmación
       // antes de usar los datos sugeridos para registrar el producto.
-      requires_confirmation:       result.confidence < 80,
-      detected_category:           result.detected_category,
-      suggested_compatible_models: result.suggested_compatible_models,
-      compatibility_source:        result.compatibility_source,
+      requires_confirmation:       data.confidence < 80,
+      detected_category:           data.detected_category,
+      suggested_compatible_models: data.suggested_compatible_models,
+      compatibility_source:        data.compatibility_source,
       // Conveniencia para el frontend: campos listos para pre-llenar el formulario
       suggested_product: {
-        name:                 result.detected_name,
-        brand:                result.detected_brand,
-        category:             result.detected_category,
-        compatible_models:    result.suggested_compatible_models,
-        compatibility_source: result.compatibility_source,
-        ai_confidence:        result.confidence,
+        name:                 data.detected_name,
+        brand:                data.detected_brand,
+        category:             data.detected_category,
+        compatible_models:    data.suggested_compatible_models,
+        compatibility_source: data.compatibility_source,
+        ai_confidence:        data.confidence,
         registration_method:  'ia',
       },
     });
   } catch (err) {
+    const companyId = req.user?.company_id;
+    const userId = req.user?.id;
+
+    // Registro de consumo fallido en ai_usage mediante el servicio
+    if (companyId && err.usage) {
+      await recordUsage({
+        companyId,
+        userId,
+        model: err.usage.model,
+        inputTokens: err.usage.inputTokens ?? 0,
+        outputTokens: err.usage.outputTokens ?? 0,
+        thinkingTokens: err.usage.thinkingTokens ?? 0,
+        latencyMs: err.usage.latencyMs ?? 0,
+        success: false,
+        errorCode: err.code || err.usage.errorCode || 'AI_SERVICE_ERROR',
+      });
+    }
+
     if (
       err.code === 'AI_TIMEOUT' ||
       err.code === 'AI_NOT_CONFIGURED' ||

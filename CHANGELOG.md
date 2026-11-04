@@ -5,6 +5,7 @@ Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
 ### Added (Fase 12 - Tarea 12.1)
+- Módulo `src/modules/plans/aiUsage.service.js` con funciones `recordUsage` y `countMonthlySuccessfulScans` centralizando todo el acceso SQL a la tabla `ai_usage` (Regla 1 de backend.md); `inventory.aiClient.js` desacoplado como cliente puro de IA sin acceso a base de datos que retorna `{ data, usage }` (Jean Pool)
 - Migración `scripts/migrations/009_planes.sql`: tabla `plans` (id SERIAL PK, code VARCHAR(30) UNIQUE NOT NULL, name VARCHAR(60) NOT NULL, price_pen NUMERIC(10,2) NOT NULL, max_users INTEGER, max_ai_scans_month INTEGER, features JSONB NOT NULL DEFAULT '{}', is_active BOOLEAN DEFAULT true, created_at) con semilla oficial 'mototrack' (S/ 99.00/mes, 10 usuarios, 1000 escaneos IA/mes, features {"whatsapp": true}) y asignación obligatoria en `companies.plan_id NOT NULL REFERENCES plans(id)` (Jean Pool)
 - Módulo `src/modules/plans/plan.service.js` con función `getUsage(companyId)` que calcula el periodo mensual en huso horario `America/Lima`, cuenta escaneos exitosos en `ai_usage` (`ai_scans_this_month`) y usuarios activos (`users_active`), proyectando estado comercial sin exponer métricas internas de costos en USD ni tokens de IA (Jean Pool)
 - Endpoint `GET /api/company/plan`: accesible para cualquier rol autenticado de la empresa, devuelve la información del plan comercial y consumo acumulado en el periodo actual (Jean Pool)
