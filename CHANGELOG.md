@@ -4,6 +4,46 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Fase 12 - Tarea 12.6)
+- Avisos al cliente por WhatsApp Fase 1 (RF-15 / Enlaces wa.me sin costo):
+  - Migración `scripts/migrations/012_avisos_whatsapp.sql`:
+    - Adición de `whatsapp_opt_in` (boolean, default false) y `whatsapp_opt_in_at` (timestamptz) a tabla `vehicles` para consentimiento de datos personales (Ley N° 29733) (Jean Pool)
+    - Ampliación de tabla `notifications` con columnas `status` (`'pending'|'opened'|'skipped'`, default 'pending'), `opened_at`, `opened_by` (FK users) y `event` (`VARCHAR(30)`), inicializando filas preexistentes en `'skipped'` (Jean Pool)
+  - Helper `src/shared/utils/phonePE.js` con función `normalizePhonePE(raw)` para celulares peruanos (9 dígitos con 9 o 11 dígitos con 519 a formato internacional `519XXXXXXXX`; fijos u otros retornan `null`) (Jean Pool)
+  - Plantillas oficiales de avisos en `src/modules/workorders/whatsappTemplates.js` para los eventos `recibido`, `pendiente_aprobacion`, `terminado` y `no_recogido`, omitiendo campos no disponibles sin llaves vacías ni datos ficticios (Jean Pool)
+  - Generación de avisos en `workorders.service.js`:
+    - `createWorkOrder` y `findOrCreateVehicle`: validan que el celular sea válido si `whatsapp_opt_in = true` (422 si no) y registran fecha de consentimiento; emite aviso `recibido` con `status = 'pending'` (Jean Pool)
+    - `updateStatus`: genera avisos pendientes para `pendiente_aprobacion` y `terminado` solo si el cliente dio su consentimiento; estados intermedios sin plantilla no generan avisos (Jean Pool)
+    - `markNotPickedUp` y `markOverdueNotPickedUp` (Job): generan avisos pendientes con evento `no_recogido` para vehículos con consentimiento (Jean Pool)
+  - Módulo `src/modules/notifications/` con control RBAC para roles `admin` y `cajero` (rol `mecanico` recibe 403 Forbidden):
+    - `GET /api/notifications/pending`: avisos pendientes de la empresa con datos del vehículo y cliente (Jean Pool)
+    - `GET /api/notifications/:id/whatsapp-link`: URL codificada `https://wa.me/51XXXXXXXXX?text=...` (422 si no cuenta con consentimiento) (Jean Pool)
+    - `PATCH /api/notifications/:id/opened`: marcado idempotente registrando fecha y usuario que abrió WhatsApp (Jean Pool)
+    - `PATCH /api/notifications/:id/skip`: descarte cuando el taller avisó por otro medio (Jean Pool)
+  - Endpoint `GET /api/workorders/:id/notifications`: historial de avisos de una OT para `admin` y `cajero` (Jean Pool)
+  - Caso 21 en `scripts/tests/test-isolation.js` validando el aislamiento multi-tenant en todas las rutas de notificaciones (Jean Pool)
+  - Suite de pruebas de integración `scripts/tests/verify-12-6.js` (`npm run test:whatsapp`) con 54 pruebas automatizadas (Jean Pool)
+  - Documentación de Fase 1 (wa.me) y roadmap de Fase 2 (Meta Cloud API en Fase 13) en `README.md` (Jean Pool)
+
+### Added (Fase 12 - Tarea 12.5)
+- Actualización de máquina de estados en `VALID_TRANSITIONS` de `src/modules/workorders/workorders.service.js`: adición de la transición `no_recogido → ['entregado']` permitiendo la entrega normal de motocicletas incluso si el cliente acude fuera del plazo de gracia (Jean Pool)
+- Función de servicio `markOverdueNotPickedUp()` en `workorders.service.js`:
+  - Operación idempotente y atómica en una sola transacción (`BEGIN / COMMIT / ROLLBACK`), segura para ejecuciones concurrentes en múltiples réplicas (Jean Pool)
+  - `UPDATE work_orders` basado en `c.not_picked_up_days` de empresas activas con cálculo de `dias_esperando` (`FLOOR(EXTRACT(EPOCH FROM (NOW() - wo.terminado_at)) / 86400)::int`) (Jean Pool)
+  - Inserción en `audit_logs` con `action = 'auto_not_picked_up'`, `user_id = NULL` y registro de estados y días de espera (Jean Pool)
+  - Inserción de notificación al taller en `notifications` con mensaje `"Moto {placa} lleva {N} días terminada sin ser recogida"` (Jean Pool)
+  - Retorna `{ updated, by_company }` (Jean Pool)
+- Módulo `src/modules/jobs/` con tres modalidades de disparo (RF-17):
+  - Temporizador interno periódico `startNotPickedUpScheduler` (`src/modules/jobs/notPickedUp.scheduler.js`) configurable mediante `JOB_NOT_PICKED_UP_MINUTES` (por defecto 60 min; `0` desactiva), ejecutado al arrancar en `server.js` y resiliente ante excepciones con prefijo `[JOB]` sin tumbar el proceso (Jean Pool)
+  - Endpoint HTTP externo `POST /api/jobs/not-picked-up` (`src/modules/jobs/jobs.controller.js` y `jobs.routes.js`) para Cloud Scheduler en Cloud Run, protegido mediante cabecera `X-Job-Token` validada en tiempo constante (`crypto.timingSafeEqual`) contra `process.env.JOBS_TOKEN` (404 si no está configurada, 401 si falta o es inválida, 200 al procesar) (Jean Pool)
+  - Script manual ejecutable vía terminal `npm run job:not-picked-up` (`scripts/jobs/run-not-picked-up.js`) (Jean Pool)
+- Endpoint `GET /api/workorders/pickup-alerts` (`getPickupAlerts` en `workorders.service.js` y `workorders.controller.js`):
+  - Restringido a roles `admin` y `cajero` (rol `mecanico` responde 403 Forbidden) (Jean Pool)
+  - Retorna `{ not_picked_up: [...], due_soon: [...] }` donde `due_soon` son las órdenes terminadas a las que les faltan 2 días o menos para vencer (`dias_esperando >= not_picked_up_days - 2`), con `id, placa, cliente, telefono, terminado_at, dias_esperando` ordenados por urgencia (Jean Pool)
+- Caso 20 en `scripts/tests/test-isolation.js` validando el aislamiento multi-tenant en `/api/workorders/pickup-alerts` (Jean Pool)
+- Suite de pruebas de integración `scripts/tests/verify-12-5.js` (`npm run test:pickup`) con verificación de plazos por empresa (15 vs 30 días), idempotencia, empresas inactivas, entrega desde no recogido, seguridad del endpoint de job, alertas y protección de datos reales (Jean Pool)
+- Documentación de jobs en `Sistema/README.md` y variables en `.env.example` (`JOBS_TOKEN`, `JOB_NOT_PICKED_UP_MINUTES`) (Jean Pool)
+
 ### Added (Fase 12 - Tarea 12.4)
 - Módulo `src/shared/utils/modelNormalizer.js` con función `normalizeModel(str)` que normaliza nombres de motos a solo caracteres alfanuméricos en minúsculas (`toLowerCase().normalize('NFD').replace(/[^a-z0-9]/g, '')`), alineado con la expresión SQL `regexp_replace(lower(x), '[^a-z0-9]', '', 'g')` (Jean Pool)
 - Filtros avanzados en `GET /api/inventory` (`getAll` en `src/modules/inventory/inventory.service.js`):

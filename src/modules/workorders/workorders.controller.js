@@ -20,6 +20,7 @@ function httpStatusFromCode(code) {
     INVALID_TRANSITION:   422,
     MISSING_FIELD:        422,
     INVALID_FIELD:        422,
+    INVALID_PHONE:        422,
     INVALID_MECHANIC:     422,  // RETROFIT Fase 6
   };
   return map[code] ?? 500;
@@ -74,7 +75,9 @@ export async function createOrder(req, res, next) {
     const newOrder = await svc.createWorkOrder(req.body, req.user.company_id);
     ok(res, newOrder, 201);
   } catch (err) {
-    if (err.code) return fail(res, err.message, httpStatusFromCode(err.code));
+    if (err.statusCode || err.code) {
+      return fail(res, err.message, err.statusCode || httpStatusFromCode(err.code));
+    }
     next(err);
   }
 }
@@ -158,6 +161,33 @@ export async function markNotPickedUp(req, res, next) {
   try {
     const result = await svc.markNotPickedUp(req.params.id, req.user.company_id);
     ok(res, result);
+  } catch (err) {
+    if (err.code) return fail(res, err.message, httpStatusFromCode(err.code));
+    next(err);
+  }
+}
+
+/**
+ * GET /api/workorders/pickup-alerts
+ * Admin y cajero: devuelve { not_picked_up, due_soon } (RF-17).
+ */
+export async function getPickupAlerts(req, res, next) {
+  try {
+    const alerts = await svc.getPickupAlerts(req.user.company_id);
+    ok(res, alerts);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/workorders/:id/notifications
+ * Admin y cajero: lista el historial de avisos de la orden de trabajo (RF-15).
+ */
+export async function getOrderNotifications(req, res, next) {
+  try {
+    const data = await svc.getOrderNotifications(req.params.id, req.user.company_id);
+    ok(res, data);
   } catch (err) {
     if (err.code) return fail(res, err.message, httpStatusFromCode(err.code));
     next(err);

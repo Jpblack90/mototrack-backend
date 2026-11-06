@@ -1,4 +1,6 @@
 import pool from '../../config/database.js';
+import { normalizePhonePE } from '../../shared/utils/phonePE.js';
+import { buildWhatsAppMessage, WHATSAPP_EVENTS } from './whatsappTemplates.js';
 
 // ─── Errores controlados ──────────────────────────────────────────────────────
 
@@ -23,73 +25,163 @@ export const VALID_TRANSITIONS = {
   en_reparacion:         ['terminado'],
   terminado:             ['entregado', 'no_recogido'],
   entregado:             [],
-  no_recogido:           [],
+  no_recogido:           ['entregado'],
 };
 
 // ─── Helpers internos ─────────────────────────────────────────────────────────
 
 /**
- * Stub de notificación al cliente.
- *
- * ⚠️  PUNTO DE INTEGRACIÓN FUTURA:
- *   Reemplazar el console.log y el channel 'stub' por una llamada real a
- *   Twilio SMS / WhatsApp Business API.
- *   La estructura de la tabla `notifications` ya está preparada para soportar
- *   múltiples canales sin cambios de esquema.
- *
- * @param {number} workOrderId
- * @param {string} message
+ * Obtiene el nombre comercial o razón social de la empresa para usar como {taller}.
+ */
+async function getCompanyName(companyId, clientOrPool = pool) {
+  const { rows } = await clientOrPool.query(
+    'SELECT nombre_comercial, razon_social FROM companies WHERE id = $1',
+    [companyId]
+  );
+  if (!rows[0]) return '';
+  return (rows[0].nombre_comercial || rows[0].razon_social || '').trim();
+}
+
+/**
+ * Crea una notificación pendiente para WhatsApp si el cliente dio su consentimiento (whatsapp_opt_in)
+ * y cuenta con un celular peruano válido (RF-15 / Fase 1).
+ */
+async function createWhatsAppNoticeIfEligible({
+  workOrderId,
+  companyId,
+  event,
+  params = {},
+  vehicle = null,
+  clientOrPool = pool,
+}) {
+  let veh = vehicle;
+  if (!veh) {
+    const { rows } = await clientOrPool.query(
+      `SELECT v.id, v.placa, v.customer_name, v.customer_phone, v.whatsapp_opt_in
+       FROM work_orders wo
+       JOIN vehicles v ON v.id = wo.vehicle_id
+       WHERE wo.id = $1 AND wo.company_id = $2`,
+      [workOrderId, companyId]
+    );
+    veh = rows[0];
+  }
+
+  if (!veh || !veh.whatsapp_opt_in) return null;
+
+  const normalizedPhone = normalizePhonePE(veh.customer_phone);
+  if (!normalizedPhone) return null;
+
+  const taller = params.taller || (await getCompanyName(companyId, clientOrPool));
+  const message = buildWhatsAppMessage(event, {
+    cliente: params.cliente || veh.customer_name,
+    placa: params.placa || veh.placa,
+    taller,
+    monto: params.monto,
+    dias: params.dias,
+  });
+
+  if (!message) return null;
+
+  const { rows: inserted } = await clientOrPool.query(
+    `INSERT INTO notifications (company_id, work_order_id, message, channel, status, event)
+     VALUES ($1, $2, $3, 'whatsapp', 'pending', $4)
+     RETURNING *`,
+    [companyId, workOrderId, message, event]
+  );
+
+  return inserted[0];
+}
+
+/**
+ * Stub de notificación al cliente (mantenido para logging/retrocompatibilidad).
  */
 async function notifyClient(workOrderId, message, companyId) {
   console.log(`📩 [STUB] Notificación a cliente — OT #${workOrderId} (Empresa ${companyId}): ${message}`);
-
-  await pool.query(
-    `INSERT INTO notifications (company_id, work_order_id, message, channel)
-     VALUES ($1, $2, $3, $4)`,
-    [companyId, workOrderId, message, 'stub']
-  );
 }
 
 // ─── Vehículos ────────────────────────────────────────────────────────────────
 
 /**
  * Busca un vehículo por placa dentro de la empresa.
- * - Si existe: actualiza con COALESCE los campos enviados y retorna el vehículo.
+ * - Si existe: actualiza con COALESCE los campos enviados y actualiza consentimiento si viene en el body.
  * - Si no existe: lo crea con su company_id y retorna el vehículo nuevo.
  *
- * @param {{ placa, brand, model, customer_name, customer_phone }} param0
+ * Si whatsapp_opt_in es true, valida que el teléfono sea un celular peruano válido (422 si no).
+ *
+ * @param {{ placa, brand, model, customer_name, customer_phone, whatsapp_opt_in }} param0
  * @param {number} companyId
+ * @param {object} [clientOrPool=pool]
  * @returns {object} vehicle row
  */
-export async function findOrCreateVehicle({ placa, brand, model, customer_name, customer_phone }, companyId) {
+export async function findOrCreateVehicle(
+  { placa, brand, model, customer_name, customer_phone, whatsapp_opt_in },
+  companyId,
+  clientOrPool = pool
+) {
+  let normalizedPhone = null;
+  if (whatsapp_opt_in === true) {
+    normalizedPhone = normalizePhonePE(customer_phone);
+    if (!normalizedPhone) {
+      throw new AppError(
+        'Ingresa un celular válido de 9 dígitos para enviar avisos por WhatsApp',
+        'INVALID_PHONE',
+        422
+      );
+    }
+  } else if (customer_phone) {
+    normalizedPhone = normalizePhonePE(customer_phone) || customer_phone;
+  }
+
   // Buscar por placa y empresa
-  const found = await pool.query(
+  const found = await clientOrPool.query(
     `SELECT * FROM vehicles WHERE placa = $1 AND company_id = $2`,
     [placa, companyId]
   );
 
   if (found.rows.length > 0) {
-    // Ya existe en esta empresa: actualizar campos no nulos con COALESCE
-    const { rows } = await pool.query(
+    const hasOptInParam = whatsapp_opt_in !== undefined;
+    const optInVal = Boolean(whatsapp_opt_in);
+
+    const { rows } = await clientOrPool.query(
       `UPDATE vehicles
        SET
-         brand          = COALESCE($1, brand),
-         model          = COALESCE($2, model),
-         customer_name  = COALESCE($3, customer_name),
-         customer_phone = COALESCE($4, customer_phone)
-       WHERE id = $5 AND company_id = $6
+         brand              = COALESCE($1, brand),
+         model              = COALESCE($2, model),
+         customer_name      = COALESCE($3, customer_name),
+         customer_phone     = COALESCE($4, customer_phone),
+         whatsapp_opt_in    = CASE WHEN $5 THEN $6 ELSE whatsapp_opt_in END,
+         whatsapp_opt_in_at = CASE WHEN $5 AND $6 THEN NOW() WHEN $5 AND NOT $6 THEN NULL ELSE whatsapp_opt_in_at END
+       WHERE id = $7 AND company_id = $8
        RETURNING *`,
-      [brand ?? null, model ?? null, customer_name ?? null, customer_phone ?? null, found.rows[0].id, companyId]
+      [
+        brand ?? null,
+        model ?? null,
+        customer_name ?? null,
+        normalizedPhone ?? (customer_phone ?? null),
+        hasOptInParam,
+        optInVal,
+        found.rows[0].id,
+        companyId,
+      ]
     );
     return rows[0];
   }
 
   // No existe: crear vinculado a la empresa
-  const { rows } = await pool.query(
-    `INSERT INTO vehicles (company_id, placa, brand, model, customer_name, customer_phone)
-     VALUES ($1, $2, $3, $4, $5, $6)
+  const optInVal = Boolean(whatsapp_opt_in);
+  const { rows } = await clientOrPool.query(
+    `INSERT INTO vehicles (company_id, placa, brand, model, customer_name, customer_phone, whatsapp_opt_in, whatsapp_opt_in_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $7 THEN NOW() ELSE NULL END)
      RETURNING *`,
-    [companyId, placa, brand ?? null, model ?? null, customer_name, customer_phone ?? null]
+    [
+      companyId,
+      placa,
+      brand ?? null,
+      model ?? null,
+      customer_name,
+      normalizedPhone ?? (customer_phone ?? null),
+      optInVal,
+    ]
   );
   return rows[0];
 }
@@ -107,8 +199,16 @@ export async function findOrCreateVehicle({ placa, brand, model, customer_name, 
  * @throws {AppError} si falta algún campo obligatorio
  */
 export async function createWorkOrder(data, companyId) {
-  const { placa, brand, model, customer_name, customer_phone, entry_mileage, checklist_notes } =
-    data;
+  const {
+    placa,
+    brand,
+    model,
+    customer_name,
+    customer_phone,
+    entry_mileage,
+    checklist_notes,
+    whatsapp_opt_in,
+  } = data;
 
   // Validación de campos obligatorios
   if (!placa || String(placa).trim() === '') {
@@ -124,13 +224,17 @@ export async function createWorkOrder(data, companyId) {
     throw new AppError('"entry_mileage" debe ser un número entero >= 0.', 'INVALID_FIELD', 422);
   }
 
-  const vehicle = await findOrCreateVehicle({
-    placa: placa.trim().toUpperCase(),
-    brand,
-    model,
-    customer_name: customer_name.trim(),
-    customer_phone,
-  }, companyId);
+  const vehicle = await findOrCreateVehicle(
+    {
+      placa: placa.trim().toUpperCase(),
+      brand,
+      model,
+      customer_name: customer_name.trim(),
+      customer_phone,
+      whatsapp_opt_in,
+    },
+    companyId
+  );
 
   const { rows } = await pool.query(
     `INSERT INTO work_orders (company_id, vehicle_id, entry_mileage, checklist_notes)
@@ -139,7 +243,19 @@ export async function createWorkOrder(data, companyId) {
     [companyId, vehicle.id, Number(entry_mileage), checklist_notes ?? null]
   );
 
-  return { ...rows[0], vehicle };
+  const workOrder = rows[0];
+
+  // Si el cliente dio su consentimiento para WhatsApp, emitir aviso de 'recibido' (RF-15)
+  if (vehicle.whatsapp_opt_in) {
+    await createWhatsAppNoticeIfEligible({
+      workOrderId: workOrder.id,
+      companyId,
+      event: WHATSAPP_EVENTS.RECIBIDO,
+      vehicle,
+    });
+  }
+
+  return { ...workOrder, vehicle };
 }
 
 /**
@@ -342,17 +458,35 @@ export async function updateStatus(id, newStatus, { diagnosis_notes, additional_
 
   const updated = rows[0];
 
-  // e) Notificar al cliente
-  let notificationMsg;
-  if (requiresApproval) {
-    notificationMsg =
-      `Su OT ha sido diagnosticada. El costo adicional es S/ ${Number(additional_cost).toFixed(2)}, ` +
-      `lo cual supera el umbral de aprobación. Por favor confirme para continuar la reparación.`;
-  } else {
-    notificationMsg = `El estado de su OT ha cambiado a: ${resolvedStatus}.`;
+  // e) Notificar al cliente si aplica plantilla de WhatsApp (RF-15)
+  if (resolvedStatus === 'pendiente_aprobacion') {
+    await createWhatsAppNoticeIfEligible({
+      workOrderId: id,
+      companyId,
+      event: WHATSAPP_EVENTS.PENDIENTE_APROBACION,
+      params: { monto: additional_cost ?? updated.additional_cost },
+    });
+  } else if (resolvedStatus === 'terminado') {
+    await createWhatsAppNoticeIfEligible({
+      workOrderId: id,
+      companyId,
+      event: WHATSAPP_EVENTS.TERMINADO,
+    });
+  } else if (resolvedStatus === 'no_recogido') {
+    const dias = Math.max(
+      1,
+      Math.floor(
+        (Date.now() - new Date(updated.terminado_at || updated.updated_at).getTime()) /
+          (1000 * 60 * 60 * 24)
+      )
+    );
+    await createWhatsAppNoticeIfEligible({
+      workOrderId: id,
+      companyId,
+      event: WHATSAPP_EVENTS.NO_RECOGIDO,
+      params: { dias },
+    });
   }
-
-  await notifyClient(id, notificationMsg, companyId);
 
   return { ...updated, requiresApproval };
 }
@@ -455,5 +589,204 @@ export async function markNotPickedUp(id, companyId) {
     [id, companyId]
   );
 
+  const dias = Math.max(
+    1,
+    Math.floor(
+      (Date.now() - new Date(current.terminado_at || current.updated_at).getTime()) /
+        (1000 * 60 * 60 * 24)
+    )
+  );
+  await createWhatsAppNoticeIfEligible({
+    workOrderId: id,
+    companyId,
+    event: WHATSAPP_EVENTS.NO_RECOGIDO,
+    params: { dias },
+  });
+
   return rows[0];
+}
+
+/**
+ * Marca automáticamente como 'no_recogido' las órdenes de trabajo terminadas
+ * que superan el plazo not_picked_up_days configurado por su empresa (RF-17).
+ *
+ * Idempotente y seguro para ejecutarse concurrentemente en múltiples instancias.
+ * Registra en una sola transacción los cambios en audit_logs y las filas en notifications.
+ * Si el cliente dio consentimiento para WhatsApp, genera también el aviso pendiente (RF-15).
+ *
+ * @returns {Promise<{ updated: number, by_company: Record<string, number> }>}
+ */
+export async function markOverdueNotPickedUp() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const updateQuery = `
+      UPDATE work_orders wo
+      SET    status = 'no_recogido',
+             updated_at = NOW()
+      FROM   companies c, vehicles v
+      WHERE  wo.company_id = c.id
+        AND  wo.vehicle_id = v.id
+        AND  c.is_active = true
+        AND  c.status IN ('active', 'trial')
+        AND  wo.status = 'terminado'
+        AND  wo.terminado_at IS NOT NULL
+        AND  wo.terminado_at < NOW() - make_interval(days => c.not_picked_up_days)
+      RETURNING
+        wo.id,
+        wo.company_id,
+        v.placa,
+        v.customer_name,
+        v.customer_phone,
+        v.whatsapp_opt_in,
+        c.nombre_comercial,
+        c.razon_social,
+        c.not_picked_up_days,
+        FLOOR(EXTRACT(EPOCH FROM (NOW() - wo.terminado_at)) / 86400)::int AS dias_esperando
+    `;
+
+    const { rows } = await client.query(updateQuery);
+
+    const byCompany = {};
+
+    for (const row of rows) {
+      const cid = String(row.company_id);
+      byCompany[cid] = (byCompany[cid] || 0) + 1;
+
+      // 1. Registro en audit_logs (inmutable, user_id NULL para operaciones automáticas del sistema)
+      await client.query(
+        `INSERT INTO audit_logs (company_id, user_id, entity, entity_id, action, changes)
+         VALUES ($1, NULL, 'work_order', $2, 'auto_not_picked_up', $3)`,
+        [
+          row.company_id,
+          row.id,
+          JSON.stringify({
+            status: { old: 'terminado', new: 'no_recogido' },
+            dias_esperando: row.dias_esperando,
+          }),
+        ]
+      );
+
+      // 2. Registro en notifications (sistema/stub, status 'skipped')
+      const msg = `Moto ${row.placa} lleva ${row.dias_esperando} días terminada sin ser recogida`;
+      await client.query(
+        `INSERT INTO notifications (company_id, work_order_id, message, channel, status)
+         VALUES ($1, $2, $3, 'stub', 'skipped')`,
+        [row.company_id, row.id, msg]
+      );
+
+      // 3. Si el cliente dio consentimiento para WhatsApp (RF-15), generar el aviso pendiente
+      const normalizedPhone = normalizePhonePE(row.customer_phone);
+      if (row.whatsapp_opt_in && normalizedPhone) {
+        const taller = (row.nombre_comercial || row.razon_social || '').trim();
+        const waMsg = buildWhatsAppMessage(WHATSAPP_EVENTS.NO_RECOGIDO, {
+          cliente: row.customer_name,
+          placa: row.placa,
+          taller,
+          dias: row.dias_esperando,
+        });
+        if (waMsg) {
+          await client.query(
+            `INSERT INTO notifications (company_id, work_order_id, message, channel, status, event)
+             VALUES ($1, $2, $3, 'whatsapp', 'pending', $4)`,
+            [row.company_id, row.id, waMsg, WHATSAPP_EVENTS.NO_RECOGIDO]
+          );
+        }
+      }
+    }
+
+    await client.query('COMMIT');
+
+    return {
+      updated: rows.length,
+      by_company: byCompany,
+    };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Consulta alertas de retiro de motos para admin y cajero (RF-17).
+ * - not_picked_up: OTs con status = 'no_recogido'.
+ * - due_soon: OTs terminadas a las que les faltan 2 días o menos para vencer el plazo not_picked_up_days.
+ *
+ * @param {number} companyId
+ * @returns {Promise<{ not_picked_up: Array<object>, due_soon: Array<object> }>}
+ */
+export async function getPickupAlerts(companyId) {
+  // 1. Motos en estado 'no_recogido'
+  const notPickedUpQuery = `
+    SELECT
+      wo.id,
+      v.placa,
+      v.customer_name  AS cliente,
+      v.customer_phone AS telefono,
+      wo.terminado_at,
+      FLOOR(EXTRACT(EPOCH FROM (NOW() - COALESCE(wo.terminado_at, wo.updated_at))) / 86400)::int AS dias_esperando
+    FROM  work_orders wo
+    JOIN  vehicles v ON v.id = wo.vehicle_id
+    WHERE wo.company_id = $1
+      AND wo.status = 'no_recogido'
+    ORDER BY dias_esperando DESC, wo.id DESC
+  `;
+
+  // 2. Motos terminadas a las que les faltan 2 días o menos para vencer
+  const dueSoonQuery = `
+    SELECT
+      wo.id,
+      v.placa,
+      v.customer_name  AS cliente,
+      v.customer_phone AS telefono,
+      wo.terminado_at,
+      FLOOR(EXTRACT(EPOCH FROM (NOW() - wo.terminado_at)) / 86400)::int AS dias_esperando
+    FROM  work_orders wo
+    JOIN  vehicles v ON v.id = wo.vehicle_id
+    JOIN  companies c ON c.id = wo.company_id
+    WHERE wo.company_id = $1
+      AND wo.status = 'terminado'
+      AND wo.terminado_at IS NOT NULL
+      AND wo.terminado_at <= NOW() - make_interval(days => GREATEST(0, c.not_picked_up_days - 2))
+      AND wo.terminado_at >= NOW() - make_interval(days => c.not_picked_up_days)
+    ORDER BY dias_esperando DESC, wo.id DESC
+  `;
+
+  const [resNotPicked, resDueSoon] = await Promise.all([
+    pool.query(notPickedUpQuery, [companyId]),
+    pool.query(dueSoonQuery, [companyId]),
+  ]);
+
+  return {
+    not_picked_up: resNotPicked.rows,
+    due_soon:      resDueSoon.rows,
+  };
+}
+
+/**
+ * Consulta el historial de notificaciones/avisos de una orden de trabajo (RF-15).
+ *
+ * @param {number|string} orderId
+ * @param {number} companyId
+ * @returns {Promise<Array<object>>}
+ */
+export async function getOrderNotifications(orderId, companyId) {
+  const current = await getById(orderId, companyId);
+  if (!current) {
+    throw new AppError(`Orden de trabajo #${orderId} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
+  }
+
+  const { rows } = await pool.query(
+    `SELECT n.id, n.work_order_id, n.message, n.channel, n.status, n.event,
+            n.created_at, n.opened_at, n.opened_by, u.name AS opened_by_name
+     FROM notifications n
+     LEFT JOIN users u ON u.id = n.opened_by
+     WHERE n.work_order_id = $1 AND n.company_id = $2
+     ORDER BY n.created_at DESC`,
+    [orderId, companyId]
+  );
+  return rows;
 }

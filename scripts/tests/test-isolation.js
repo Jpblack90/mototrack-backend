@@ -871,6 +871,102 @@ async function run() {
     );
 
     // ─────────────────────────────────────────────────────────────────────────
+    // CASO 20: AISLAMIENTO EN ALERTAS DE RETIRO (RF-17)
+    // ─────────────────────────────────────────────────────────────────────────
+    console.log('--- Caso 20: Aislamiento en /workorders/pickup-alerts (RF-17) ---');
+
+    // 20a: Crear una OT en no_recogido en Empresa A
+    const { rows: [woIsoA] } = await pool.query(
+      `INSERT INTO work_orders (company_id, vehicle_id, status, entry_mileage, terminado_at)
+       VALUES ($1, $2, 'no_recogido', 100, NOW() - INTERVAL '25 days')
+       RETURNING id`,
+      [companyAId, companyA.vehicleId]
+    );
+
+    // 20b: Empresa B consulta pickup-alerts -> la OT de A no debe aparecer
+    const pickupAlertsBRes = await request('/workorders/pickup-alerts', {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    const bPickupAlerts = pickupAlertsBRes.data?.data || { not_picked_up: [], due_soon: [] };
+    const allBPickupItems = [...(bPickupAlerts.not_picked_up || []), ...(bPickupAlerts.due_soon || [])];
+    const hasAInPickupB = allBPickupItems.some((item) => item.id === woIsoA.id);
+
+    assert(
+      pickupAlertsBRes.status === 200 && !hasAInPickupB,
+      'Empresa B no ve las alertas de retiro de Empresa A (/api/workorders/pickup-alerts)',
+      `status: ${pickupAlertsBRes.status}`
+    );
+
+    // Limpieza de la OT de prueba de aislamiento
+    await pool.query(`UPDATE work_orders SET status = 'entregado' WHERE id = $1`, [woIsoA.id]);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CASO 21: Aislamiento en Avisos de WhatsApp (/api/notifications) (RF-15)
+    // ─────────────────────────────────────────────────────────────────────────
+    console.log('--- Caso 21: Aislamiento en Avisos de WhatsApp (/api/notifications) (RF-15) ---');
+
+    // 21a: Empresa A crea una notificación pendiente
+    const { rows: [notifA] } = await pool.query(
+      `INSERT INTO notifications (company_id, work_order_id, message, channel, status, event)
+       VALUES ($1, $2, 'Aviso aislamiento A', 'whatsapp', 'pending', 'recibido')
+       RETURNING id`,
+      [companyAId, companyA.workOrderId]
+    );
+
+    // 21b: B consulta GET /api/notifications/pending -> no ve el aviso de A
+    const pendingBRes = await request('/notifications/pending', {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    const pendingBList = pendingBRes.data?.data || [];
+    const hasAInPendingB = pendingBList.some((n) => n.id === notifA.id);
+
+    assert(
+      pendingBRes.status === 200 && !hasAInPendingB,
+      'Empresa B no ve los avisos pendientes de Empresa A (/api/notifications/pending)'
+    );
+
+    // 21c: B intenta GET /api/notifications/:id_de_A/whatsapp-link -> 404
+    const linkBRes = await request(`/notifications/${notifA.id}/whatsapp-link`, {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    assert(
+      linkBRes.status === 404,
+      'Empresa B recibe 404 al intentar obtener link de WhatsApp de Empresa A'
+    );
+
+    // 21d: B intenta PATCH /api/notifications/:id_de_A/opened -> 404
+    const openBRes = await request(`/notifications/${notifA.id}/opened`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    assert(
+      openBRes.status === 404,
+      'Empresa B recibe 404 al intentar marcar como abierto aviso de Empresa A'
+    );
+
+    // 21e: B intenta PATCH /api/notifications/:id_de_A/skip -> 404
+    const skipBRes = await request(`/notifications/${notifA.id}/skip`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    assert(
+      skipBRes.status === 404,
+      'Empresa B recibe 404 al intentar omitir aviso de Empresa A'
+    );
+
+    // 21f: B intenta GET /api/workorders/:id_de_A/notifications -> 404
+    const woNotifsBRes = await request(`/workorders/${companyA.workOrderId}/notifications`, {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    assert(
+      woNotifsBRes.status === 404,
+      'Empresa B recibe 404 al consultar historial de avisos de OT de Empresa A'
+    );
+
+    // Limpieza del aviso de prueba
+    await pool.query(`UPDATE notifications SET status = 'skipped' WHERE id = $1`, [notifA.id]);
+
+    // ─────────────────────────────────────────────────────────────────────────
     // VERIFICACIÓN FINAL: EMPRESA REAL INTACTA
     // ─────────────────────────────────────────────────────────────────────────
     if (realCompanyId && initialRealCounts) {

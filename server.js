@@ -2,6 +2,7 @@ import 'dotenv/config';
 import app from './src/app.js';
 import { testConnection } from './src/config/database.js';
 import { warmUp } from './src/modules/inventory/inventory.aiClient.js';
+import { startNotPickedUpScheduler } from './src/modules/jobs/notPickedUp.scheduler.js';
 
 const PORT = process.env.PORT ?? 4000;
 
@@ -11,6 +12,9 @@ async function bootstrap() {
   // Precalentamiento de la conexión con Gemini — fire-and-forget.
   // No bloqueamos app.listen(): si warmUp falla solo loguea una advertencia.
   warmUp();
+
+  // Temporizador interno para verificar motos no recogidas (RF-17)
+  startNotPickedUpScheduler();
 
   app.listen(PORT, () => {
     console.log(`🚀  MotoTrack AI backend corriendo en http://localhost:${PORT}`);

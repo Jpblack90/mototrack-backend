@@ -57,10 +57,50 @@ node scripts/activate-company.js <company_id>
 - Remueve la fecha de expiración (`trial_ends_at = NULL`).
 - Registra el evento de auditoría en `audit_logs` con `action = 'activate'`, `entity = 'company'`, `entity_id = <company_id>` y `user_id = NULL` (operación a nivel de sistema).
 
+## Procesos en Segundo Plano y Jobs (RF-17)
+
+El sistema incluye el job de **marcación automática de motos no recogidas**, el cual revisa órdenes terminadas cuyo plazo de espera supera el configurado por la empresa (`c.not_picked_up_days`), pasándolas a `no_recogido`, registrando la auditoría y notificando al cliente. Existen tres formas de ejecutarlo:
+
+1. **Temporizador Interno (Entorno Local y Docker por defecto):**
+   - Se ejecuta al iniciar el servidor y de forma periódica cada `JOB_NOT_PICKED_UP_MINUTES` minutos (por defecto 60).
+   - Los fallos se capturan internamente con el prefijo `[JOB]` sin interrumpir el proceso del servidor.
+   - Configuración en `.env`: `JOB_NOT_PICKED_UP_MINUTES=60`.
+
+2. **Endpoint Externo para Cloud Scheduler (Entornos Serverless como Google Cloud Run):**
+   - En Cloud Run o contenedores serverless efímeros, el temporizador interno se desactiva configurando `JOB_NOT_PICKED_UP_MINUTES=0`.
+   - Google Cloud Scheduler invoca el endpoint HTTP mediante una petición `POST /api/jobs/not-picked-up`.
+   - El endpoint no utiliza JWT sino la cabecera `X-Job-Token`, validada en tiempo constante (`crypto.timingSafeEqual`) contra la variable de entorno `JOBS_TOKEN`.
+
+3. **Script CLI Manual:**
+   - Puede ejecutarse manualmente desde la terminal mediante el script npm:
+   ```bash
+   npm run job:not-picked-up
+   ```
+
+## Avisos al Cliente por WhatsApp (RF-15)
+
+El sistema soporta el envío de avisos sobre el estado de la moto a los clientes vía WhatsApp.
+
+- **Fase 1 (Implementada - Sin costo / wa.me):**
+  - Genera enlaces directos a `https://wa.me/51XXXXXXXXX?text=<mensaje>` con el mensaje prearmado y codificado de forma segura.
+  - El cajero o administrador envía el aviso desde el WhatsApp del taller con un solo clic, sin recurrir a APIs no oficiales que infrinjan los términos de servicio de WhatsApp.
+  - Registro de consentimiento informado en cumplimiento de la Ley N° 29733 (Protección de Datos Personales).
+  - Ciclo de vida completo: `pending` (por enviar), `opened` (enlace abierto e idempotente), `skipped` (omitido).
+- **Fase 2 (Programada para Fase 13 - Automatización total):**
+  - Integración nativa con la API oficial de Meta (WhatsApp Business Cloud API) para despacho 100% automático desatendido y plantillas verificadas.
+
 ## Verificación y Suites de Pruebas
 
 Para validar el correcto funcionamiento de la plataforma y el aislamiento multi-tenant:
 
+- **Pruebas de Avisos por WhatsApp (Tarea 12.6):**
+  ```bash
+  npm run test:whatsapp
+  ```
+- **Pruebas de Motos No Recogidas y Scheduler (Tarea 12.5):**
+  ```bash
+  npm run test:pickup
+  ```
 - **Pruebas de Onboarding y Registro de Talleres (Tarea 11.5):**
   ```bash
   npm run test:onboarding
