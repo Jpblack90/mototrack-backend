@@ -1,6 +1,7 @@
 import pool from '../../config/database.js';
 import { logAudit, diffObjects } from '../../shared/audit.js';
 import { normalizeModel } from '../../shared/utils/modelNormalizer.js';
+import { testHooksEnabled } from '../../shared/utils/testHooks.js';
 
 export { normalizeModel };
 
@@ -149,7 +150,7 @@ export async function getAll({ search, compatible_with, stock_status } = {}, com
   if (compatible_with && compatible_with.trim() !== '') {
     conditions.push(`EXISTS (
       SELECT 1 FROM unnest(compatible_models) AS m
-      WHERE regexp_replace(lower(m), '[^a-z0-9]', '', 'g') = regexp_replace(lower($${paramIdx}), '[^a-z0-9]', '', 'g')
+      WHERE regexp_replace(lower(unaccent(m)), '[^a-z0-9]', '', 'g') = regexp_replace(lower(unaccent($${paramIdx})), '[^a-z0-9]', '', 'g')
     )`);
     params.push(compatible_with.trim());
     paramIdx++;
@@ -443,7 +444,7 @@ export async function create(data, companyId, userId = null) {
  * @param {number|null}   userId  ID del usuario autenticado (req.user.id)
  * @returns {object|null} null si no existe o está inactivo
  */
-export async function update(id, data, companyId, userId = null) {
+export async function update(id, data, companyId, userId = null, options = {}) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -589,6 +590,14 @@ export async function update(id, data, companyId, userId = null) {
           approved_by: userId,
         },
       });
+    }
+
+    // Punto de prueba de rollback (solo si test hooks están habilitados)
+    if (
+      testHooksEnabled() &&
+      (process.env.FORCE_AUDIT_FAIL === '1' || options?.forceFail === true)
+    ) {
+      throw new Error('[TEST] Error forzado después de insertar el log de auditoría y antes del COMMIT');
     }
 
     await client.query('COMMIT');

@@ -3,6 +3,7 @@ import { logAudit } from '../../shared/audit.js';
 import { decrementStock, restoreStock } from '../inventory/inventory.service.js';
 import { buildCreditNoteXml } from '../invoicing/invoicing.service.js';
 import { sendComprobante } from '../invoicing/invoicing.pseClient.js';
+import { testHooksEnabled } from '../../shared/utils/testHooks.js';
 
 // ─── Errores controlados ──────────────────────────────────────────────────────
 
@@ -707,9 +708,9 @@ export async function voidSale(id, options, companyId, userId = null) {
       },
     });
 
-    // Punto de prueba de rollback (solo fuera de producción)
+    // Punto de prueba de rollback (solo si test hooks están habilitados)
     if (
-      process.env.NODE_ENV !== 'production' &&
+      testHooksEnabled() &&
       (process.env.FORCE_VOID_FAIL === '1' || options?.forceFail === true)
     ) {
       throw new Error('[TEST] Error forzado después de insertar la NC y antes del COMMIT');

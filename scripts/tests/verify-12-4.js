@@ -144,6 +144,22 @@ async function run() {
     const found3 = (resNorm3.data?.data || []).some(p => p.id === p1.id);
     assert(found3, 'compatible_with="Honda  CG125" (espacios) encuentra el producto guardado con "Honda CG125"');
 
+    // Producto con "Yamaha Ténéré 700" en compatible_models (prueba de acentos / unaccent)
+    const skuTenere = `TEST-TENERE-${Date.now()}`;
+    const { rows: [pTenere] } = await pool.query(
+      `INSERT INTO products (company_id, sku, name, brand, category, cost_price, sale_price, stock, min_stock, compatible_models)
+       VALUES ($1, $2, '[PRUEBA] Parabrisas Ténéré', 'Yamaha', 'Accesorios', 80.00, 150.00, 5, 2, $3)
+       RETURNING *`,
+      [companyA.companyId, skuTenere, ['Yamaha Ténéré 700']]
+    );
+
+    // Consulta con "yamaha tenere 700" (sin acento)
+    const resTenere = await request(`/inventory?compatible_with=${encodeURIComponent('yamaha tenere 700')}`, {
+      headers: { Authorization: `Bearer ${tokenAdminA}` },
+    });
+    const foundTenere = (resTenere.data?.data || []).some(p => p.id === pTenere.id);
+    assert(foundTenere, 'compatible_with="yamaha tenere 700" encuentra el producto guardado con "Yamaha Ténéré 700"');
+
     // ─── 2. Filtros stock_status=low y stock_status=out ───────────────────────
     console.log('\n--- Caso 2: Filtros stock_status=low y stock_status=out ---');
 

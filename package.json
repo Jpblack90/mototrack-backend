@@ -23,7 +23,8 @@
     "test:stock": "node scripts/tests/verify-12-4.js",
     "test:pickup": "node scripts/tests/verify-12-5.js",
     "test:whatsapp": "node scripts/tests/verify-12-6.js",
-    "job:not-picked-up": "node scripts/jobs/run-not-picked-up.js"
+    "job:not-picked-up": "node scripts/jobs/run-not-picked-up.js",
+    "test:all": "node scripts/tests/run-all-tests.js"
   },
   "keywords": [
     "mototrack",

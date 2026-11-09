@@ -44,6 +44,18 @@ Para la correcta resolución de IPs en los mecanismos de Rate Limiting y segurid
   ```
   Esto instruye a Express a confiar en el primer salto del proxy inverso administrado y extraer la IP legítima del cliente desde `X-Forwarded-For`.
 
+## Entorno de Producción y Seguridad (`ENABLE_TEST_HOOKS`)
+
+En entornos de producción, el backend debe ejecutarse estrictamente con:
+```env
+NODE_ENV=production
+```
+y **sin definir** la variable de entorno `ENABLE_TEST_HOOKS`.
+
+Por regla de seguridad, cuando `ENABLE_TEST_HOOKS !== '1'` o `NODE_ENV === 'production'`:
+- Todas las trampas y utilitarios de prueba (`X-Force-Audit-Fail`, `X-Force-Void-Fail`, `FORCE_AUDIT_FAIL`, `FORCE_VOID_FAIL`) permanecen completamente desactivadas por defecto.
+- El endpoint de desarrollo para reiniciar rate limiters (`POST /api/auth/reset-rate-limit`) no se registra en las rutas de la aplicación (responde `404 Not Found`).
+
 ## Activación de Talleres (Suscripción Manual)
 
 Cuando un taller registrado durante el periodo de prueba (14 días gratis) adquiere una suscripción comercial activa, el administrador del sistema puede activar su cuenta de forma definitiva:

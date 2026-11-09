@@ -2,6 +2,7 @@ import * as inventoryService from './inventory.service.js';
 import { analyzeProductImage } from './inventory.aiClient.js';
 import { getUsage } from '../plans/plan.service.js';
 import { recordUsage } from '../plans/aiUsage.service.js';
+import { testHooksEnabled } from '../../shared/utils/testHooks.js';
 
 // ─── Formato de respuesta uniforme ───────────────────────────────────────────
 
@@ -111,7 +112,17 @@ export async function updateItem(req, res, next) {
     if (req.body.force === true && req.user?.role !== 'admin') {
       return fail(res, 'Solo un Administrador puede forzar un margen negativo.', 403);
     }
-    const updated = await inventoryService.update(req.params.id, req.body, req.user.company_id, req.user?.id ?? null);
+    const forceFail =
+      testHooksEnabled() &&
+      (process.env.FORCE_AUDIT_FAIL === '1' || req.headers['x-force-audit-fail'] === '1');
+
+    const updated = await inventoryService.update(
+      req.params.id,
+      req.body,
+      req.user.company_id,
+      req.user?.id ?? null,
+      { forceFail }
+    );
     if (!updated) return fail(res, 'Producto no encontrado.', 404);
     ok(res, updated);
   } catch (err) {

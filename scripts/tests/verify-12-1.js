@@ -174,17 +174,27 @@ async function run() {
       body: { image_base64: photoBase64, mime_type: 'image/jpeg' },
     });
     if (rScan1.status !== 200) {
-      console.log('   (Reintentando escaneo inicial por fluctuación de latencia...)');
-      await new Promise((r) => setTimeout(r, 2000));
+      console.log('   (Reintentando escaneo inicial por fluctuación de latencia... fallo previo:', rScan1.status, JSON.stringify(rScan1.data), ')');
+      await new Promise((r) => setTimeout(r, 3000));
       rScan1 = await request('/inventory/scan', {
         method: 'POST',
         headers: { Authorization: `Bearer ${tokenB}` },
         body: { image_base64: photoBase64, mime_type: 'image/jpeg' },
       });
+      if (rScan1.status !== 200) {
+        console.log('   (Segundo reintento escaneo inicial... fallo previo:', rScan1.status, JSON.stringify(rScan1.data), ')');
+        await new Promise((r) => setTimeout(r, 4000));
+        rScan1 = await request('/inventory/scan', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${tokenB}` },
+          body: { image_base64: photoBase64, mime_type: 'image/jpeg' },
+        });
+      }
     }
     assert(
       rScan1.status === 200 && rScan1.data?.success === true,
-      `Primer escaneo responde 200 OK (consumo 1 de 1)`
+      `Primer escaneo responde 200 OK (consumo 1 de 1)`,
+      `status: ${rScan1.status}, data: ${JSON.stringify(rScan1.data)}`
     );
 
     const rPlanUsage2 = await request('/company/plan', {

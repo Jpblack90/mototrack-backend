@@ -205,21 +205,45 @@ async function run() {
     // Caso 3: Atomicidad Transaccional (Rollback)
     // ─────────────────────────────────────────────────────────────────────────
     console.log('--- Caso 3: Atomicidad transaccional: Rollback no deja registros en audit_logs ---');
+    const { rows: prodBeforeRows } = await pool.query(
+      'SELECT name, sale_price FROM products WHERE id = $1',
+      [companyA.productId]
+    );
+    const prodBefore = prodBeforeRows[0];
+
     const { rows: logsBeforeCount } = await pool.query(
       'SELECT COUNT(*)::int AS count FROM audit_logs WHERE company_id = $1',
       [companyAId]
     );
 
-    // Intentar modificar un producto con un margen negativo sin force: true
-    // El service lanzará NEGATIVE_MARGIN y hará ROLLBACK antes de comitear
+    // Modificar un producto forzando error post-auditoría antes del COMMIT (Rollback real)
+    const newAttemptName = `[PRUEBA] Nombre Revertido ${Date.now()}`;
     const rFailedUpdate = await request(`/inventory/${companyA.productId}`, {
       method: 'PUT',
-      headers: { Authorization: `Bearer ${tokenAdminA}` },
-      body: { sale_price: 1.00, cost_price: 100.00 }, // margen muy negativo sin force
+      headers: {
+        Authorization: `Bearer ${tokenAdminA}`,
+        'X-Force-Audit-Fail': '1',
+      },
+      body: {
+        name: newAttemptName,
+        _force_audit_fail: true,
+      },
     });
     assert(
-      rFailedUpdate.status === 422,
-      'Operación de negocio rechazada por validación de margen (422)'
+      rFailedUpdate.status >= 400,
+      'Operación rechazada por error forzado antes del COMMIT',
+      `status: ${rFailedUpdate.status}`
+    );
+
+    // Verificar en BD que el producto NO cambió
+    const { rows: prodAfterRows } = await pool.query(
+      'SELECT name, sale_price FROM products WHERE id = $1',
+      [companyA.productId]
+    );
+    assert(
+      prodAfterRows[0].name === prodBefore.name,
+      'El producto no sufrió cambios tras el rollback de la transacción',
+      `esperado: "${prodBefore.name}", actual: "${prodAfterRows[0].name}"`
     );
 
     const { rows: logsAfterCount } = await pool.query(

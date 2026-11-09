@@ -215,7 +215,7 @@ async function run() {
   console.log('Respuesta:', JSON.stringify(invoiceWithoutRucRes.data, null, 2));
 
   // Restaurar RUC válido en B
-  await pool.query(`UPDATE companies SET ruc = '20123456786' WHERE id = $1`, [companyBId]);
+  await pool.query(`UPDATE companies SET ruc = '20999999922' WHERE id = $1`, [companyBId]);
   console.log('✅  RUC restaurado en Empresa B.');
 
   // Desactivar empresas de prueba

@@ -4,6 +4,23 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Changed (Fase 13 - Tarea 13.0b)
+- Ajustes de compatibilidad, auditoría, seeds y pruebas del backend:
+  - Migración `scripts/migrations/013_unaccent.sql`: habilitación de la extensión PostgreSQL `unaccent` para ignorar acentos y diacríticos en comparaciones de texto (Jean Pool)
+  - Normalización de modelos en SQL y JS (RF-08, RF-20, RF-21):
+    - `src/shared/utils/modelNormalizer.js`: actualización de `normalizeModel(str)` descomponiendo y limpiando marcas diacríticas (`normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '')`), garantizando que "Ténéré" produzca "tenere" (Jean Pool)
+    - `src/modules/inventory/inventory.service.js`: filtro `compatible_with` en `getAll` alineado con `regexp_replace(lower(unaccent(m)), '[^a-z0-9]', '', 'g') = regexp_replace(lower(unaccent($N)), '[^a-z0-9]', '', 'g')` (Jean Pool)
+    - Adición de caso de prueba en `scripts/tests/verify-12-4.js` (`test:stock`) validando que un producto con `"Yamaha Ténéré 700"` se localiza con `compatible_with="yamaha tenere 700"` (Jean Pool)
+  - RUC válidos en seeds de prueba:
+    - `src/modules/company/company.service.js`: exportación de helper `generateSunatRuc(base10)` bajo el algoritmo oficial Módulo 11 de SUNAT (Jean Pool)
+    - `scripts/tests/seed-test-company.js`: actualización de RUCs de prueba a valores conformes con Módulo 11 (`20999999914` para Taller A y `20999999922` para Taller B) y actualización de las empresas de prueba existentes en base de datos (Jean Pool)
+  - Prueba de rollback real en auditoría (`scripts/tests/verify-11-4.js`):
+    - `src/modules/inventory/inventory.controller.js` y `inventory.service.js`: test hook de desarrollo (`X-Force-Audit-Fail: 1` / `FORCE_AUDIT_FAIL=1`) que detona un error forzado tras `logAudit()` y antes de `COMMIT` exclusivamente cuando `NODE_ENV !== 'production'` (Jean Pool)
+    - `verify-11-4.js` (Caso 3): verificación de rollback atómico comprobando que ni el cambio de datos del producto ni el registro en `audit_logs` persisten en base de datos (Jean Pool)
+  - Ejecutor general de pruebas `npm run test:all`:
+    - `src/shared/middlewares/rateLimiter.js`: migración de limitadores a instancias `MemoryStore` dedicadas y exportación de `resetAllRateLimiters()` (Jean Pool)
+    - `src/modules/auth/auth.routes.js`: endpoint de desarrollo `POST /api/auth/reset-rate-limit` habilitado cuando `NODE_ENV !== 'production'` para reiniciar contadores de rate limit (Jean Pool)
+    - `scripts/tests/run-all-tests.js`: script que ejecuta en orden las 12 suites (`isolation`, `users`, `audit`, `onboarding`, `ai`, `plans`, `payments`, `credit-notes`, `stock`, `pickup`, `whatsapp`, `company`), resetea los rate limits entre suites (evitando que `test:onboarding` bloquee las siguientes) y muestra un resumen final por suite con salida de código 0 o 1 (Jean Pool)
 ### Added (Fase 12 - Tarea 12.6)
 - Avisos al cliente por WhatsApp Fase 1 (RF-15 / Enlaces wa.me sin costo):
   - Migración `scripts/migrations/012_avisos_whatsapp.sql`:
@@ -282,35 +299,6 @@ Cada entrada indica el integrante responsable entre paréntesis.
 Cada vez que agreguen, cambien o arreglen algo en el proyecto, ANTES de hacer commit deben:
 
 1. Abrir este archivo (CHANGELOG.md).
-2. Buscar la sección ## [Unreleased]
-### Added (Fase 12 - Tarea 12.1)
-- Migración `scripts/migrations/009_planes.sql`: tabla `plans` (id SERIAL PK, code VARCHAR(30) UNIQUE NOT NULL, name VARCHAR(60) NOT NULL, price_pen NUMERIC(10,2) NOT NULL, max_users INTEGER, max_ai_scans_month INTEGER, features JSONB NOT NULL DEFAULT '{}', is_active BOOLEAN DEFAULT true, created_at) con semilla oficial 'mototrack' (S/ 99.00/mes, 10 usuarios, 1000 escaneos IA/mes, features {"whatsapp": true}) y asignación obligatoria en `companies.plan_id NOT NULL REFERENCES plans(id)` (Jean Pool)
-- Módulo `src/modules/plans/plan.service.js` con función `getUsage(companyId)` que calcula el periodo mensual en huso horario `America/Lima`, cuenta escaneos exitosos en `ai_usage` (`ai_scans_this_month`) y usuarios activos (`users_active`), proyectando estado comercial sin exponer métricas internas de costos en USD ni tokens de IA (Jean Pool)
-- Endpoint `GET /api/company/plan`: accesible para cualquier rol autenticado de la empresa, devuelve la información del plan comercial y consumo acumulado en el periodo actual (Jean Pool)
-- Control de límites de plan en backend con respuesta HTTP 403 y código uniforme `PLAN_LIMIT_REACHED`:
-  - `POST /api/inventory/scan`: validación previa antes de invocar a Gemini; si se alcanza `max_ai_scans_month` rechaza con mensaje amigable informando la renovación el día 1 sin generar consumo en `ai_usage` (Jean Pool)
-  - Creación y reactivación de usuarios en `src/modules/users/users.service.js`: si se alcanza `max_users` activos se bloquea con 403 informando el límite del plan (Jean Pool)
-- Asignación automática del plan oficial 'mototrack' en el flujo de registro público `POST /api/auth/register-company` (Jean Pool)
-- Caso 17 en `scripts/tests/test-isolation.js` verificando que el consumo y consultas de `/api/company/plan` de una empresa permanecen 100% aislados de las demás (Jean Pool)
-- Suite de verificación integral `scripts/tests/verify-12-1.js` (`npm run test:plans`) con 10 pruebas automatizadas cubriendo no cómputo de escaneos fallidos, bloqueo previo a Gemini al superar cupo, límite de usuarios activos, endpoint `/api/company/plan` y protección estricta de privacidad (Jean Pool)
-
-### Added (Fase 12 - Tarea 12.0)
-- Migración `scripts/migrations/008_ai_usage.sql`: creación de tabla `ai_usage` (id BIGSERIAL PK, company_id NOT NULL FK, user_id FK, model, input_tokens, output_tokens, thinking_tokens, latency_ms, success, error_code, estimated_cost_usd, created_at) con índice compuesto `(company_id, created_at)` para medición granular de consumo (Jean Pool)
-- Función pura `mapGeminiError(err)` en `src/modules/inventory/inventory.aiClient.js` que clasifica y sanitiza errores de Gemini (`AI_NOT_CONFIGURED` para claves inválidas/vencidas, `AI_QUOTA` para límite 429/RESOURCE_EXHAUSTED, `AI_TIMEOUT` para demoras y `AI_SERVICE_ERROR` para fallos genéricos) garantizando que ninguna traza de infraestructura o credencial de Google se exponga al usuario (Jean Pool)
-- Diagnóstico del servicio en `warmUp()` con registro de estados (`ok`, `invalid_key`, `unconfigured`, `unknown`) y exposición de `ai` en `GET /api/health` (Jean Pool)
-- Registro no bloqueante de consumo de tokens y estimación de costos en USD por escaneo en `ai_usage`, cobrando tokens de pensamiento (`thinking_tokens`) como salida en base a variables de entorno `AI_PRICE_INPUT_PER_M` y `AI_PRICE_OUTPUT_PER_M` (Jean Pool)
-- Script administrativo `scripts/ai-usage-report.js [YYYY-MM]` para consolidación mensual de escaneos, tokens y costos por taller en huso horario `America/Lima` (Jean Pool)
-- Suite de pruebas automatizadas `scripts/tests/verify-12-0.js` (`npm run test:ai`) con validación unitaria de sanitización y prueba de integración de escaneo real con imagen (Jean Pool)
-### Added (Fase 11 - Tarea 11.5)
-- Migración `scripts/migrations/007_registro_talleres.sql`: agrega columnas `trial_ends_at TIMESTAMPTZ` y `terms_accepted_at TIMESTAMPTZ` a la tabla `companies` con retrocompatibilidad (NULL en empresas existentes para evitar expiración) (Jean Pool)
-- Endpoint público `POST /api/auth/register-company`: registro atómico transaccional de nuevos talleres con validación de RUC Módulo 11 opcional, unicidad de RUC y correo (409), política de contraseñas seguras, aceptación de términos (Ley 29733), creación de usuario admin con `must_change_password = false`, registro en `audit_logs` (company y user create) y emisión directa de JWT (Jean Pool)
-- Verificación de expiración de prueba en `authenticate.js` y `auth.service.js`: bloqueo con HTTP 403 `TRIAL_EXPIRED` cuando `status = 'trial'` y `trial_ends_at < now()` (Jean Pool)
-- Proyección de `trial_ends_at` y cálculo en tiempo real de `days_left` en `GET /api/company` (Jean Pool)
-- Proyección de métricas operativas de onboarding en `GET /api/dashboard` (`has_ruc`, `has_logo`, `active_users_count`, `total_active_products`, `all_time_sales_count`) para guiar la configuración inicial del taller (Jean Pool)
-- Rate limiting con `express-rate-limit` en endpoints de autenticación: `loginRateLimiter` (máximo 10 intentos fallidos cada 15 min por IP+email con HTTP 429) y `registerCompanyRateLimiter` (máximo 5 registros por hora por IP con HTTP 429) (Jean Pool)
-- Script de administración `scripts/activate-company.js <company_id>` para activar permanentemente talleres que adquieren su plan comercial, eliminando la fecha de expiración y auditando la activación (Jean Pool)
-- Caso 16 en `scripts/tests/test-isolation.js` validando expiración de periodo de prueba, bloqueo de endpoints protegidos y aislamiento de talleres en trial (Jean Pool)
-- Suite de pruebas automatizadas `scripts/tests/verify-11-5.js` (`npm run test:onboarding`) con 21 pruebas de registro, validaciones, rate limiting y ciclo de vida de prueba (Jean Pool) al inicio.
 3. Agregar su cambio con el formato correspondiente:
    - ### Added    → para funcionalidades nuevas
    - ### Changed  → para cambios en funcionalidad existente

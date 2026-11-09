@@ -1,4 +1,5 @@
 import * as svc from './sales.service.js';
+import { testHooksEnabled } from '../../shared/utils/testHooks.js';
 
 // ─── Formato de respuesta uniforme ───────────────────────────────────────────
 
@@ -112,10 +113,8 @@ export async function voidSale(req, res, next) {
   try {
     const { void_reason, motivo_code } = req.body;
     const forceFail =
-      process.env.NODE_ENV !== 'production' &&
-      (process.env.FORCE_VOID_FAIL === '1' ||
-        req.headers['x-force-void-fail'] === '1' ||
-        req.body?._force_void_fail === true);
+      testHooksEnabled() &&
+      (process.env.FORCE_VOID_FAIL === '1' || req.headers['x-force-void-fail'] === '1');
 
     const sale = await svc.voidSale(
       req.params.id,

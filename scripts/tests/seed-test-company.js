@@ -214,7 +214,7 @@ export async function seedTestCompany() {
     // Empresa A
     const companyA = await seedOneCompany(client, {
       name: '[PRUEBA] Taller A',
-      ruc: '20999999991',
+      ruc: '20999999914',
       adminName: 'Admin Taller A',
       adminEmail: 'pruebaa@mototrack.local',
       mechanicName: 'Mecánico Taller A',
@@ -236,7 +236,7 @@ export async function seedTestCompany() {
     // Empresa B
     const companyB = await seedOneCompany(client, {
       name: '[PRUEBA] Taller B',
-      ruc: '20999999992',
+      ruc: '20999999922',
       adminName: 'Admin Taller B',
       adminEmail: 'pruebab@mototrack.local',
       mechanicName: 'Mecánico Taller B',

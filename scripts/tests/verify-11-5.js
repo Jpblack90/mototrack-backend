@@ -6,10 +6,14 @@
 // =============================================================================
 
 import 'dotenv/config';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import pool from '../../src/config/database.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const execFileAsync = promisify(execFile);
 
@@ -143,7 +147,7 @@ async function run() {
       body: {
         razon_social: '[PRUEBA] Taller Onboarding Express S.A.C.',
         nombre_comercial: 'Taller Express Onboarding',
-        ruc: '20123456786', // RUC válido Módulo 11
+        ruc: '20999999931', // RUC válido Módulo 11
         admin_name: 'Juan Perez Dueño',
         email: testEmail,
         password: testPassword,
@@ -378,6 +382,59 @@ async function run() {
       'Petición con X-Forwarded-For falsificado NO evita el 429 (con TRUST_PROXY sin definir / false)',
       `status: ${resSpoofed.status}, data: ${JSON.stringify(resSpoofed.data)}`
     );
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Caso 7c: Con ENABLE_TEST_HOOKS sin definir, POST /api/auth/reset-rate-limit → 404
+    // ─────────────────────────────────────────────────────────────────────────
+    console.log('--- Caso 7c: Con ENABLE_TEST_HOOKS sin definir, POST /api/auth/reset-rate-limit -> 404 ---');
+    const testServerPort = 4001;
+    const testServerCode = `
+      await import('./src/config/database.js');
+      delete process.env.ENABLE_TEST_HOOKS;
+      const { default: app } = await import('./src/app.js');
+      const server = app.listen(${testServerPort}, () => {
+        if (process.send) process.send('ready');
+      });
+      process.on('message', (msg) => {
+        if (msg === 'shutdown') {
+          server.close(() => process.exit(0));
+        }
+      });
+    `;
+
+    const testChild = spawn('node', ['--input-type=module', '-e', testServerCode], {
+      cwd: path.resolve(__dirname, '../../'),
+      env: { ...process.env, PORT: String(testServerPort) },
+      stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+    });
+
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Timeout esperando inicio de test server sin hooks')), 5000);
+        testChild.on('message', (msg) => {
+          if (msg === 'ready') {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+        testChild.on('error', (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+      });
+
+      const resHook = await fetch(`http://localhost:${testServerPort}/api/auth/reset-rate-limit`, {
+        method: 'POST',
+      });
+      assert(
+        resHook.status === 404,
+        'Con ENABLE_TEST_HOOKS sin definir, POST /api/auth/reset-rate-limit responde 404 Not Found',
+        `status: ${resHook.status}`
+      );
+    } finally {
+      testChild.send('shutdown');
+      await new Promise((resolve) => testChild.on('exit', resolve));
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Caso 8: Integridad de Taller Principal

@@ -168,7 +168,7 @@ async function run() {
 
     console.log(`  📸 Enviando escaneo real de repuesto (${photoBuffer.length} bytes)...`);
     const scanStart = Date.now();
-    const resScan = await fetch(`${API_BASE}/inventory/scan`, {
+    let resScan = await fetch(`${API_BASE}/inventory/scan`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -180,7 +180,24 @@ async function run() {
       }),
     });
 
-    const scanData = await resScan.json();
+    let scanData = await resScan.json();
+
+    if (resScan.status !== 200) {
+      console.log('   (Reintentando escaneo real por fluctuación de latencia/red...)');
+      await new Promise((r) => setTimeout(r, 2000));
+      resScan = await fetch(`${API_BASE}/inventory/scan`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${testToken}`,
+        },
+        body: JSON.stringify({
+          image_base64: photoBase64,
+          mime_type: 'image/jpeg',
+        }),
+      });
+      scanData = await resScan.json();
+    }
     const scanLatency = Date.now() - scanStart;
 
     assert(

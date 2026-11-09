@@ -1,4 +1,8 @@
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator, MemoryStore } from 'express-rate-limit';
+
+export const loginMemoryStore = new MemoryStore();
+export const loginIpMemoryStore = new MemoryStore();
+export const registerCompanyMemoryStore = new MemoryStore();
 
 /**
  * Limitador para inicio de sesión por cuenta (IP + Email):
@@ -9,6 +13,7 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 export const loginRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
+  store: loginMemoryStore,
   skipSuccessfulRequests: true,
   requestWasSuccessful: (_req, res) => res.statusCode < 400 || res.statusCode === 403,
   keyGenerator: (req) => `${ipKeyGenerator(req.ip)}_${(req.body?.email || '').toLowerCase().trim()}`,
@@ -33,6 +38,7 @@ export const loginRateLimiter = rateLimit({
 export const loginIpRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 50,
+  store: loginIpMemoryStore,
   skipSuccessfulRequests: true,
   requestWasSuccessful: (_req, res) => res.statusCode < 400 || res.statusCode === 403,
   keyGenerator: (req) => ipKeyGenerator(req.ip),
@@ -57,6 +63,7 @@ export const loginIpRateLimiter = rateLimit({
 export const registerCompanyRateLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 5,
+  store: registerCompanyMemoryStore,
   keyGenerator: (req) => ipKeyGenerator(req.ip),
   standardHeaders: true,
   legacyHeaders: false,
@@ -70,3 +77,13 @@ export const registerCompanyRateLimiter = rateLimit({
     });
   },
 });
+
+/**
+ * Reinicia todos los contadores de rate limiting en memoria.
+ * Utilizado por suites de prueba automatizadas entre ejecuciones.
+ */
+export function resetAllRateLimiters() {
+  loginMemoryStore.resetAll();
+  loginIpMemoryStore.resetAll();
+  registerCompanyMemoryStore.resetAll();
+}

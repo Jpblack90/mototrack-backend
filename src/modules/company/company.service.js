@@ -31,6 +31,25 @@ export function validateSunatRuc(ruc) {
 }
 
 /**
+ * Genera un RUC válido según el algoritmo oficial de SUNAT (Módulo 11)
+ * a partir de los primeros 10 dígitos (prefijo 10, 15, 16, 17 o 20 + 8 dígitos).
+ * @param {string} base10
+ * @returns {string} RUC completo de 11 dígitos
+ */
+export function generateSunatRuc(base10 = '2099999991') {
+  const base = String(base10).slice(0, 10);
+  const weights = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2];
+  let sum = 0;
+  for (let i = 0; i < 10; i++) {
+    sum += parseInt(base[i], 10) * weights[i];
+  }
+  const residue = sum % 11;
+  const diff = 11 - residue;
+  const checkDigit = diff === 10 ? 0 : (diff === 11 ? 1 : diff);
+  return base + checkDigit;
+}
+
+/**
  * Obtiene los datos de configuración de una empresa por ID.
  * @param {number} companyId
  */
