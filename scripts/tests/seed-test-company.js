@@ -21,6 +21,10 @@ async function seedOneCompany(client, config) {
     adminEmail,
     mechanicName,
     mechanicEmail,
+    almaceneroName,
+    almaceneroEmail,
+    cajeroName,
+    cajeroEmail,
     productSku,
     productName,
     productCost,
@@ -104,6 +108,54 @@ async function seedOneCompany(client, config) {
       [companyId, mechanicName, mechanicEmail, passwordHash]
     );
     mechanicId = newMec[0].id;
+  }
+
+  // 3b. Almacenero de la empresa
+  let almaceneroId = null;
+  if (almaceneroEmail) {
+    const { rows: almRows } = await client.query(
+      `SELECT id FROM users WHERE email = $1`,
+      [almaceneroEmail]
+    );
+    if (almRows.length > 0) {
+      almaceneroId = almRows[0].id;
+      await client.query(
+        `UPDATE users SET company_id = $1, is_active = true, role = 'almacenero', password_hash = $2 WHERE id = $3`,
+        [companyId, passwordHash, almaceneroId]
+      );
+    } else {
+      const { rows: newAlm } = await client.query(
+        `INSERT INTO users (company_id, name, email, password_hash, role, is_active)
+         VALUES ($1, $2, $3, $4, 'almacenero', true)
+         RETURNING id`,
+        [companyId, almaceneroName, almaceneroEmail, passwordHash]
+      );
+      almaceneroId = newAlm[0].id;
+    }
+  }
+
+  // 3c. Cajero de la empresa
+  let cajeroId = null;
+  if (cajeroEmail) {
+    const { rows: cajRows } = await client.query(
+      `SELECT id FROM users WHERE email = $1`,
+      [cajeroEmail]
+    );
+    if (cajRows.length > 0) {
+      cajeroId = cajRows[0].id;
+      await client.query(
+        `UPDATE users SET company_id = $1, is_active = true, role = 'cajero', password_hash = $2 WHERE id = $3`,
+        [companyId, passwordHash, cajeroId]
+      );
+    } else {
+      const { rows: newCaj } = await client.query(
+        `INSERT INTO users (company_id, name, email, password_hash, role, is_active)
+         VALUES ($1, $2, $3, $4, 'cajero', true)
+         RETURNING id`,
+        [companyId, cajeroName, cajeroEmail, passwordHash]
+      );
+      cajeroId = newCaj[0].id;
+    }
   }
 
   // 4. Producto de la empresa
@@ -196,6 +248,10 @@ async function seedOneCompany(client, config) {
     adminPassword: DEMO_PASSWORD,
     mechanicId,
     mechanicEmail,
+    almaceneroId,
+    almaceneroEmail,
+    cajeroId,
+    cajeroEmail,
     productId,
     productSku,
     kitId,
@@ -219,6 +275,10 @@ export async function seedTestCompany() {
       adminEmail: 'pruebaa@mototrack.local',
       mechanicName: 'Mecánico Taller A',
       mechanicEmail: 'mecanicoa@mototrack.local',
+      almaceneroName: 'Almacenero Taller A',
+      almaceneroEmail: 'almaceneroa@mototrack.local',
+      cajeroName: 'Cajero Taller A',
+      cajeroEmail: 'cajeroa@mototrack.local',
       productSku: 'PRUEBA-A01',
       productName: '[PRUEBA] Cilindro A',
       productCost: 50.00,
@@ -241,6 +301,10 @@ export async function seedTestCompany() {
       adminEmail: 'pruebab@mototrack.local',
       mechanicName: 'Mecánico Taller B',
       mechanicEmail: 'mecanicob@mototrack.local',
+      almaceneroName: 'Almacenero Taller B',
+      almaceneroEmail: 'almacenerob@mototrack.local',
+      cajeroName: 'Cajero Taller B',
+      cajeroEmail: 'cajerob@mototrack.local',
       productSku: 'PRUEBA-B01',
       productName: '[PRUEBA] Pastillas B',
       productCost: 20.00,

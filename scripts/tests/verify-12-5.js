@@ -327,6 +327,7 @@ async function run() {
   } else {
     console.log('✅  TODAS LAS PRUEBAS DE LA TAREA 12.5 PASARON CON ÉXITO.');
     console.log('===============================================================\n');
+    await new Promise((resolve) => setTimeout(resolve, 50));
     process.exit(0);
   }
 }

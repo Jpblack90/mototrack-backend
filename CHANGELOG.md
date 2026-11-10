@@ -4,6 +4,12 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Fase 14 - Tarea 14.0)
+- Soporte para app móvil en endpoint de órdenes de trabajo (RF-14):
+  - `src/modules/workorders/workorders.controller.js` y `workorders.service.js`: parámetro de consulta `?assigned=me` en `GET /api/workorders`, filtrando estrictamente por `mechanic_id = req.user.id` dentro de `wo.company_id = req.user.company_id` (Jean Pool)
+  - `scripts/tests/test-isolation.js`: Caso 23 verificando aislamiento multi-tenant y filtrado exclusivo de órdenes asignadas al mecánico autenticado (Jean Pool)
+  - `scripts/tests/seed-test-company.js`: siembra automatizada de roles operativos `almacenero` y `cajero` en empresas de prueba para pruebas móviles (Jean Pool)
+
 ### Added (Fase 13 - Tarea 13.2)
 - Cobro manual de suscripción (Yape, Plin, transferencia, efectivo), vencimiento, avisos y suspensión automática (RF-27):
   - Migración `scripts/migrations/015_suscripciones.sql`:

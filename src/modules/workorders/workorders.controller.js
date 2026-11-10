@@ -43,11 +43,13 @@ export async function getHistoryByPlaca(req, res, next) {
 /**
  * GET /api/workorders
  * GET /api/workorders?status=recibido
+ * GET /api/workorders?assigned=me
  */
 export async function getAllOrders(req, res, next) {
   try {
-    const { status } = req.query;
-    const orders = await svc.getAll({ status }, req.user.company_id);
+    const { status, assigned } = req.query;
+    const mechanicId = assigned === 'me' ? req.user.id : undefined;
+    const orders = await svc.getAll({ status, mechanicId }, req.user.company_id);
     ok(res, orders);
   } catch (err) {
     next(err);

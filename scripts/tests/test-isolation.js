@@ -995,6 +995,52 @@ async function run() {
     await pool.query(`DELETE FROM subscription_payments WHERE id = $1`, [payIsoA.id]);
 
     // ─────────────────────────────────────────────────────────────────────────
+    // CASO 23: Filtro ?assigned=me en Órdenes de Trabajo (RF Móvil)
+    // ─────────────────────────────────────────────────────────────────────────
+    console.log('--- Caso 23: Filtro ?assigned=me en Órdenes de Trabajo ---');
+
+    // 23a: Obtener token del mecánico de Empresa A
+    const loginMecA = await request('/auth/login', {
+      method: 'POST',
+      body: { email: companyA.mechanicEmail, password: companyA.adminPassword },
+    });
+    const tokenMecA = loginMecA.data?.data?.token;
+
+    // 23b: Crear 2 órdenes en Empresa A: una asignada al mecánico A y otra sin asignar
+    const { rows: [woAssignedA] } = await pool.query(
+      `INSERT INTO work_orders (company_id, vehicle_id, mechanic_id, entry_mileage, status)
+       VALUES ($1, $2, $3, 12000, 'recibido')
+       RETURNING id`,
+      [companyAId, companyA.vehicleId, companyA.mechanicId]
+    );
+
+    const { rows: [woUnassignedA] } = await pool.query(
+      `INSERT INTO work_orders (company_id, vehicle_id, mechanic_id, entry_mileage, status)
+       VALUES ($1, $2, NULL, 13000, 'recibido')
+       RETURNING id`,
+      [companyAId, companyA.vehicleId]
+    );
+
+    // 23c: Mecánico A consulta GET /api/workorders?assigned=me
+    const myOrdersRes = await request('/workorders?assigned=me', {
+      headers: { Authorization: `Bearer ${tokenMecA}` },
+    });
+    const myOrders = myOrdersRes.data?.data || [];
+    const hasAssigned = myOrders.some((wo) => wo.id === woAssignedA.id);
+    const hasUnassigned = myOrders.some((wo) => wo.id === woUnassignedA.id);
+    const allAssignedToMe = myOrders.length > 0 && myOrders.every(
+      (wo) => Number(wo.mechanic_id) === Number(companyA.mechanicId) && Number(wo.company_id) === Number(companyAId)
+    );
+
+    assert(
+      myOrdersRes.status === 200 && hasAssigned && !hasUnassigned && allAssignedToMe,
+      'Mecánico A con ?assigned=me solo ve las órdenes asignadas a su ID dentro de su empresa'
+    );
+
+    // Limpieza de órdenes de prueba del caso 23
+    await pool.query(`DELETE FROM work_orders WHERE id IN ($1, $2)`, [woAssignedA.id, woUnassignedA.id]);
+
+    // ─────────────────────────────────────────────────────────────────────────
     // VERIFICACIÓN FINAL: EMPRESA REAL INTACTA
     // ─────────────────────────────────────────────────────────────────────────
     if (realCompanyId && initialRealCounts) {
@@ -1029,8 +1075,19 @@ async function run() {
           `UPDATE companies SET is_active = false WHERE id IN ($1, $2)`,
           [companyAId, companyBId]
         );
+        await pool.query(
+          `UPDATE users SET is_active = false WHERE email IN (
+            'almaceneroa@mototrack.local',
+            'almacenerob@mototrack.local',
+            'cajeroa@mototrack.local',
+            'cajerob@mototrack.local'
+          )`
+        );
+        await pool.query(
+          `UPDATE users SET must_change_password = false WHERE email = 'mecanicob@mototrack.local'`
+        );
         console.log(
-          `\n🧹  Limpieza: Empresas de prueba id=${companyAId} y id=${companyBId} desactivadas lógicamente (is_active = false).`
+          `\n🧹  Limpieza: Empresas de prueba y usuarios operativos desactivados lógicamente (Regla 8).`
         );
       } catch (cleanErr) {
         console.error('Error al desactivar empresas de prueba:', cleanErr.message);

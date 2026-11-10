@@ -77,8 +77,9 @@ async function run() {
   const testEmail = `taller.onboarding.${Date.now()}@mototrack.local`;
   const testPassword = 'Password123!';
 
-  // Limpieza preventiva: liberar RUC de pruebas previas interrumpidas
+  // Limpieza preventiva: liberar RUC de pruebas previas interrumpidas y reiniciar rate limits
   await pool.query(`UPDATE companies SET ruc = NULL WHERE razon_social LIKE '[PRUEBA] Taller Onboarding%'`);
+  await request('/auth/reset-rate-limit', { method: 'POST' });
 
   try {
     // 0. Conteo inicial de "Taller Principal" para verificar que no sea tocado
@@ -330,6 +331,8 @@ async function run() {
     // Caso 7: Rate limiting global de login por IP (50 fallidos -> intento 51 da 429)
     // ─────────────────────────────────────────────────────────────────────────
     console.log('--- Caso 7: Rate limiting global por IP (50 fallidos con emails distintos -> intento 51 da 429) ---');
+    // Reiniciar rate limits antes de la prueba para que el contador de IP comience exactamente en 0
+    await request('/auth/reset-rate-limit', { method: 'POST' });
     const runTimestamp = Date.now();
     let allFirst50Are401 = true;
     for (let i = 1; i <= 50; i++) {
@@ -459,7 +462,8 @@ async function run() {
     console.error('💥  Error inesperado durante la verificación:', err);
     failedTests++;
   } finally {
-    // Desactivar empresas [PRUEBA] creadas en la suite
+    // Desactivar empresas [PRUEBA] creadas en la suite y limpiar contadores de rate limit
+    await request('/auth/reset-rate-limit', { method: 'POST' }).catch(() => {});
     if (createdCompanyIds.length > 0) {
       try {
         await pool.query(

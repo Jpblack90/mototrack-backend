@@ -260,38 +260,34 @@ export async function createWorkOrder(data, companyId) {
 
 /**
  * Lista todas las OT de la empresa con datos del vehículo asociado.
- * Filtra por status si se envía.
+ * Filtra por status y/o mecánico asignado si se envían.
  *
- * @param {{ status?: string }} options
+ * @param {{ status?: string, mechanicId?: number }} options
  * @param {number}             companyId
  */
-export async function getAll({ status } = {}, companyId) {
-  let query;
-  let params;
+export async function getAll({ status, mechanicId } = {}, companyId) {
+  const conditions = ['wo.company_id = $1'];
+  const params = [companyId];
 
   if (status && status.trim() !== '') {
-    query = `
-      SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone,
-             u.name AS mechanic_name
-      FROM   work_orders wo
-      JOIN   vehicles    v  ON v.id  = wo.vehicle_id
-      LEFT JOIN users    u  ON u.id  = wo.mechanic_id
-      WHERE  wo.company_id = $1 AND wo.status = $2
-      ORDER  BY wo.id ASC
-    `;
-    params = [companyId, status.trim()];
-  } else {
-    query = `
-      SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone,
-             u.name AS mechanic_name
-      FROM   work_orders wo
-      JOIN   vehicles    v  ON v.id  = wo.vehicle_id
-      LEFT JOIN users    u  ON u.id  = wo.mechanic_id
-      WHERE  wo.company_id = $1
-      ORDER  BY wo.id ASC
-    `;
-    params = [companyId];
+    params.push(status.trim());
+    conditions.push(`wo.status = $${params.length}`);
   }
+
+  if (mechanicId !== undefined && mechanicId !== null) {
+    params.push(Number(mechanicId));
+    conditions.push(`wo.mechanic_id = $${params.length}`);
+  }
+
+  const query = `
+    SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone,
+           u.name AS mechanic_name
+    FROM   work_orders wo
+    JOIN   vehicles    v  ON v.id  = wo.vehicle_id
+    LEFT JOIN users    u  ON u.id  = wo.mechanic_id
+    WHERE  ${conditions.join(' AND ')}
+    ORDER  BY wo.id ASC
+  `;
 
   const { rows } = await pool.query(query, params);
   return rows;
