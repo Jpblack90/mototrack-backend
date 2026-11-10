@@ -4,6 +4,16 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Fase 14 - Tarea 14.1)
+- Restricciones RBAC para el rol mecánico en órdenes de trabajo:
+  - `src/modules/workorders/workorders.controller.js` y `workorders.service.js`:
+    - El mecánico solo puede actualizar órdenes de trabajo que tenga asignadas (`mechanic_id = req.user.id`), devolviendo HTTP 403 `WORK_ORDER_NOT_ASSIGNED` ("Esta orden no está asignada a ti.") en caso contrario (Jean Pool)
+    - El mecánico solo puede solicitar transiciones a `diagnostico`, `en_reparacion` y `terminado`; intentos de avanzar a `entregado` o `no_recogido` son denegados con HTTP 403 `STATUS_NOT_ALLOWED_FOR_ROLE` (Jean Pool)
+    - Las órdenes de otra empresa continúan respondiendo HTTP 404 bajo estricto aislamiento multi-tenant (Jean Pool)
+    - El rol `admin` mantiene permisos completos para avanzar órdenes a `entregado` (Jean Pool)
+  - Suite de pruebas de integración `scripts/tests/verify-14-1.js` (`npm run test:mechanic`): 9 pruebas automatizadas verificando flujo feliz, salto a `pendiente_aprobacion` por costo adicional, bloqueo en OT sin asignar, bloqueo ante estados no permitidos, aislamiento entre empresas y entrega por admin (Jean Pool)
+  - Integración en runner general `scripts/tests/run-all-tests.js` (`npm run test:all`): incorporada como suite 15/15 (Jean Pool)
+
 ### Added (Fase 14 - Tarea 14.0)
 - Soporte para app móvil en endpoint de órdenes de trabajo (RF-14):
   - `src/modules/workorders/workorders.controller.js` y `workorders.service.js`: parámetro de consulta `?assigned=me` en `GET /api/workorders`, filtrando estrictamente por `mechanic_id = req.user.id` dentro de `wo.company_id = req.user.company_id` (Jean Pool)

@@ -5,8 +5,8 @@ import * as svc from './workorders.service.js';
 const ok = (res, data, status = 200) =>
   res.status(status).json({ success: true, data });
 
-const fail = (res, message, status = 400) =>
-  res.status(status).json({ success: false, error: { message } });
+const fail = (res, message, status = 400, code = null) =>
+  res.status(status).json({ success: false, error: { message, ...(code ? { code } : {}) } });
 
 /**
  * Traduce el .code de AppError al HTTP status correspondiente.
@@ -14,14 +14,16 @@ const fail = (res, message, status = 400) =>
  */
 function httpStatusFromCode(code) {
   const map = {
-    WORK_ORDER_NOT_FOUND: 404,
-    VEHICLE_NOT_FOUND:    404,
-    MECHANIC_NOT_FOUND:   404,
-    INVALID_TRANSITION:   422,
-    MISSING_FIELD:        422,
-    INVALID_FIELD:        422,
-    INVALID_PHONE:        422,
-    INVALID_MECHANIC:     422,  // RETROFIT Fase 6
+    WORK_ORDER_NOT_FOUND:        404,
+    VEHICLE_NOT_FOUND:           404,
+    MECHANIC_NOT_FOUND:          404,
+    WORK_ORDER_NOT_ASSIGNED:     403,
+    STATUS_NOT_ALLOWED_FOR_ROLE: 403,
+    INVALID_TRANSITION:          422,
+    MISSING_FIELD:               422,
+    INVALID_FIELD:               422,
+    INVALID_PHONE:               422,
+    INVALID_MECHANIC:            422,  // RETROFIT Fase 6
   };
   return map[code] ?? 500;
 }
@@ -121,11 +123,12 @@ export async function updateStatus(req, res, next) {
         diagnosis_notes,
         additional_cost,
       },
-      req.user.company_id
+      req.user.company_id,
+      { userRole: req.user.role, userId: req.user.id }
     );
     ok(res, result);
   } catch (err) {
-    if (err.code) return fail(res, err.message, httpStatusFromCode(err.code));
+    if (err.code) return fail(res, err.message, httpStatusFromCode(err.code), err.code);
     next(err);
   }
 }

@@ -385,12 +385,34 @@ export async function assignMechanic(id, mechanic_id, companyId) {
  * @param {string}        newStatus
  * @param {{ diagnosis_notes?: string, additional_cost?: number }} extras
  * @param {number}        companyId
+ * @param {{ userRole?: string, userId?: number }} [actor]
  */
-export async function updateStatus(id, newStatus, { diagnosis_notes, additional_cost } = {}, companyId) {
+export async function updateStatus(
+  id,
+  newStatus,
+  { diagnosis_notes, additional_cost } = {},
+  companyId,
+  { userRole, userId } = {}
+) {
   // a) Verificar que la OT existe en la empresa
   const current = await getById(id, companyId);
   if (!current) {
     throw new AppError(`Orden de trabajo #${id} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
+  }
+
+  // Restricciones para el rol mecanico (Tarea 14.1)
+  if (userRole === 'mecanico') {
+    if (!current.mechanic_id || Number(current.mechanic_id) !== Number(userId)) {
+      throw new AppError('Esta orden no está asignada a ti.', 'WORK_ORDER_NOT_ASSIGNED', 403);
+    }
+    const ALLOWED_MECHANIC_TARGETS = ['diagnostico', 'en_reparacion', 'terminado'];
+    if (!ALLOWED_MECHANIC_TARGETS.includes(newStatus)) {
+      throw new AppError(
+        `Los mecánicos no pueden cambiar el estado a '${newStatus}'.`,
+        'STATUS_NOT_ALLOWED_FOR_ROLE',
+        403
+      );
+    }
   }
 
   const currentStatus = current.status;

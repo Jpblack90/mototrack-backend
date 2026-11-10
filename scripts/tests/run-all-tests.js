@@ -45,6 +45,7 @@ const SUITES = [
   { name: 'company',      script: 'scripts/tests/verify-11-2b.js' },
   { name: 'pse',          script: 'scripts/tests/verify-13-1.js' },
   { name: 'billing',      script: 'scripts/tests/verify-13-2.js' },
+  { name: 'mechanic',     script: 'scripts/tests/verify-14-1.js' },
 ];
 
 async function resetRateLimit() {
