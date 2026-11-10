@@ -1,5 +1,6 @@
 import pool from '../../config/database.js';
 import { sendComprobante } from './invoicing.pseClient.js';
+import { getPseProvider } from './pse/index.js';
 import { logAudit } from '../../shared/audit.js';
 
 // ─── Errores controlados ──────────────────────────────────────────────────────
@@ -139,6 +140,112 @@ export function buildCreditNoteXml({ sale, invoice, ncData, company = {} }) {
 </comprobante>`;
 }
 
+/**
+ * Construye el payload unificado para el proveedor de PSE (Nubefact o Simulado).
+ */
+export function buildPseDocument({
+  comprobanteType,
+  serie,
+  numero,
+  sale,
+  customerDocType,
+  customerDocNumber,
+  creditNote,
+  invoiceModificado,
+}) {
+  let docTypeCliente = '-';
+  const rawDocType = String(customerDocType || '').toUpperCase();
+  if (rawDocType === 'DNI' || (customerDocNumber && customerDocNumber.length === 8)) {
+    docTypeCliente = '1';
+  } else if (rawDocType === 'RUC' || (customerDocNumber && customerDocNumber.length === 11)) {
+    docTypeCliente = '6';
+  } else if (rawDocType === 'CE' || rawDocType === 'CARNET') {
+    docTypeCliente = '4';
+  } else if (rawDocType === 'PASAPORTE') {
+    docTypeCliente = '7';
+  }
+
+  const igvRate = Number(sale?.igv_rate) || 0.18;
+  const items = (sale?.items ?? []).map((it) => {
+    const unitPrice = Number(it.unit_price) || 0;
+    const qty = Number(it.quantity) || 1;
+    const subtotal = Number(it.subtotal) || (unitPrice * qty);
+    const valorUnitario = +(unitPrice / (1 + igvRate)).toFixed(2);
+    const totalIgv = +(subtotal - (subtotal / (1 + igvRate))).toFixed(2);
+    const totalGravada = +(subtotal / (1 + igvRate)).toFixed(2);
+
+    return {
+      unidad_de_medida: 'NIU',
+      codigo: it.product_id ? `PROD-${it.product_id}` : (it.kit_id ? `KIT-${it.kit_id}` : 'ITEM'),
+      descripcion: it.product_name ?? it.kit_name ?? it.description ?? 'Ítem',
+      cantidad: qty,
+      valor_unitario: valorUnitario,
+      precio_unitario: +unitPrice.toFixed(2),
+      descuento: 0,
+      subtotal: totalGravada,
+      tipo_de_igv: 1,
+      igv: totalIgv,
+      total: +subtotal.toFixed(2),
+      anticipo_regularizacion: false,
+      anticipo_documento_serie: '',
+      anticipo_documento_numero: '',
+    };
+  });
+
+  if (items.length === 0 && Number(sale?.total) > 0) {
+    const total = Number(sale.total) || 0;
+    const subtotal = Number(sale.subtotal) || +(total / (1 + igvRate)).toFixed(2);
+    const igv = Number(sale.igv) || +(total - subtotal).toFixed(2);
+    items.push({
+      unidad_de_medida: 'NIU',
+      codigo: 'VENTA',
+      descripcion: 'Venta de productos o servicios',
+      cantidad: 1,
+      valor_unitario: subtotal,
+      precio_unitario: total,
+      descuento: 0,
+      subtotal: subtotal,
+      tipo_de_igv: 1,
+      igv: igv,
+      total: total,
+      anticipo_regularizacion: false,
+      anticipo_documento_serie: '',
+      anticipo_documento_numero: '',
+    });
+  }
+
+  const tipoComprobante = creditNote
+    ? 3
+    : (comprobanteType === 'factura' ? 1 : 2);
+
+  const doc = {
+    tipo_de_comprobante: tipoComprobante,
+    serie,
+    numero,
+    cliente_tipo_de_documento: docTypeCliente,
+    cliente_numero_de_documento: customerDocNumber || (docTypeCliente === '6' ? '00000000000' : '00000000'),
+    cliente_denominacion: sale?.customer_name || (tipoComprobante === 1 ? 'CLIENTE CON RUC' : 'CLIENTES VARIOS'),
+    cliente_direccion: '',
+    cliente_email: '',
+    fecha_de_emision: new Date(sale?.created_at || Date.now()).toISOString().split('T')[0],
+    porcentaje_de_igv: +(igvRate * 100).toFixed(2),
+    total_gravada: Number(sale?.subtotal) || 0,
+    total_igv: Number(sale?.igv) || 0,
+    total: Number(sale?.total) || 0,
+    items,
+  };
+
+  if (creditNote && invoiceModificado) {
+    doc.documento_que_se_modifica_tipo = invoiceModificado.comprobante_type === 'factura' ? 1 : 2;
+    doc.documento_que_se_modifica_serie = invoiceModificado.serie;
+    doc.documento_que_se_modifica_numero = invoiceModificado.numero;
+    doc.tipo_de_nota_de_credito = Number(creditNote.motivo_code) || 1;
+    doc.motivo = creditNote.motivo_descripcion || 'Anulación de la operación';
+  }
+
+  return doc;
+}
+
 // ─── Servicio de Facturación ──────────────────────────────────────────────────
 
 /**
@@ -167,17 +274,20 @@ export async function createInvoice({
   const client = await pool.connect();
   let invoice;
   let sale;
-  const serie = comprobante_type === 'factura' ? 'F001' : 'B001';
+  let company;
+  let serie;
 
   try {
     await client.query('BEGIN');
 
-    // a) Verificar datos fiscales de la empresa
+    // a) Verificar datos fiscales de la empresa y configuración PSE
     const { rows: compRows } = await client.query(
-      `SELECT ruc, razon_social, direccion FROM companies WHERE id = $1`,
+      `SELECT id, ruc, razon_social, direccion, nombre_comercial, pse_provider, pse_url, pse_token_enc,
+              series_boleta, series_factura, series_nc_boleta, series_nc_factura
+       FROM companies WHERE id = $1`,
       [companyId]
     );
-    const company = compRows[0];
+    company = compRows[0];
     if (!company || !company.ruc || !company.razon_social || !company.ruc.trim() || !company.razon_social.trim()) {
       throw new AppError(
         'Configura el RUC y la razón social de tu taller en Configuración antes de emitir comprobantes.',
@@ -185,6 +295,10 @@ export async function createInvoice({
         422
       );
     }
+
+    serie = comprobante_type === 'factura'
+      ? (company.series_factura || 'F001')
+      : (company.series_boleta || 'B001');
 
     // b) Buscar la venta con company_id
     const { rows: saleRows } = await client.query(
@@ -214,7 +328,7 @@ export async function createInvoice({
       return { ...existing[0], alreadyExists: true };
     }
 
-    // Traer ítems de la venta expandidos para el XML
+    // Traer ítems de la venta expandidos para el XML y PSE
     const { rows: saleItems } = await client.query(
       `SELECT
          si.quantity, si.unit_price, si.subtotal,
@@ -281,17 +395,49 @@ export async function createInvoice({
     client.release();
   }
 
-  // e) Enviar al PSE simulado (fuera de la transacción del correlativo)
+  // e) Enviar al PSE según proveedor configurado (fuera de la transacción del correlativo)
+  const provider = getPseProvider(company);
+  const pseDoc = buildPseDocument({
+    comprobanteType: comprobante_type,
+    serie,
+    numero: invoice.numero,
+    sale,
+    customerDocType: customer_document_type,
+    customerDocNumber: customer_document_number,
+  });
+
   let updatedInvoice;
   try {
-    const pseResult = await sendComprobante({ xml: invoice.xml_content, simulatePseDown });
+    const pseResult = await provider.send({
+      type: 'invoice',
+      company,
+      document: pseDoc,
+      simulatePseDown,
+    });
 
+    const finalEstado = pseResult.accepted ? 'accepted' : 'rejected';
     const { rows } = await pool.query(
       `UPDATE invoices
-       SET estado = 'accepted', cdr_response = $1, is_contingency = false, updated_at = NOW()
-       WHERE id = $2 AND company_id = $3
+       SET estado = $1,
+           cdr_response = $2,
+           is_contingency = false,
+           pdf_url = $3,
+           xml_url = $4,
+           hash = $5,
+           qr_string = $6,
+           updated_at = NOW()
+       WHERE id = $7 AND company_id = $8
        RETURNING *`,
-      [JSON.stringify(pseResult.cdr), invoice.id, companyId]
+      [
+        finalEstado,
+        JSON.stringify(pseResult.raw ?? { description: pseResult.sunat_description }),
+        pseResult.pdf_url ?? null,
+        pseResult.xml_url ?? null,
+        pseResult.hash ?? null,
+        pseResult.qr_string ?? null,
+        invoice.id,
+        companyId,
+      ]
     );
     updatedInvoice = rows[0];
 
@@ -343,23 +489,77 @@ export async function retryContingency(id, companyId, userId = null) {
       );
     }
 
-    // Reenviar sin simulatePseDown — se asume que el PSE ya está disponible
+    const { rows: compRows } = await client.query(
+      `SELECT id, ruc, razon_social, direccion, nombre_comercial, pse_provider, pse_url, pse_token_enc
+       FROM companies WHERE id = $1`,
+      [companyId]
+    );
+    const company = compRows[0];
+
+    const { rows: saleRows } = await client.query(
+      `SELECT * FROM sales WHERE id = $1 AND company_id = $2`,
+      [invoice.sale_id, companyId]
+    );
+    const sale = saleRows[0] || {};
+
+    const { rows: saleItems } = await client.query(
+      `SELECT si.quantity, si.unit_price, si.subtotal,
+              p.name AS product_name, k.name AS kit_name
+       FROM sale_items si
+       LEFT JOIN products p ON p.id = si.product_id
+       LEFT JOIN kits k ON k.id = si.kit_id
+       WHERE si.sale_id = $1`,
+      [invoice.sale_id]
+    );
+    sale.items = saleItems;
+
+    const provider = getPseProvider(company);
+    const pseDoc = buildPseDocument({
+      comprobanteType: invoice.comprobante_type,
+      serie: invoice.serie,
+      numero: invoice.numero,
+      sale,
+      customerDocType: invoice.customer_document_type,
+      customerDocNumber: invoice.customer_document_number,
+    });
+
     let updatedInvoice;
     try {
-      const pseResult = await sendComprobante({ xml: invoice.xml_content, simulatePseDown: false });
+      const pseResult = await provider.send({
+        type: 'invoice',
+        company,
+        document: pseDoc,
+        simulatePseDown: false,
+      });
 
+      const finalEstado = pseResult.accepted ? 'accepted' : 'rejected';
       const { rows: updated } = await client.query(
         `UPDATE invoices
-         SET estado = 'accepted', cdr_response = $1, is_contingency = false, updated_at = NOW()
-         WHERE id = $2 AND company_id = $3
+         SET estado = $1,
+             cdr_response = $2,
+             is_contingency = false,
+             pdf_url = $3,
+             xml_url = $4,
+             hash = $5,
+             qr_string = $6,
+             updated_at = NOW()
+         WHERE id = $7 AND company_id = $8
          RETURNING *`,
-        [JSON.stringify(pseResult.cdr), id, companyId]
+        [
+          finalEstado,
+          JSON.stringify(pseResult.raw ?? { description: pseResult.sunat_description }),
+          pseResult.pdf_url ?? null,
+          pseResult.xml_url ?? null,
+          pseResult.hash ?? null,
+          pseResult.qr_string ?? null,
+          id,
+          companyId,
+        ]
       );
       updatedInvoice = updated[0];
 
     } catch (pseErr) {
       if (pseErr.code === 'PSE_UNAVAILABLE') {
-        // Sigue sin poder enviar — se mantiene en contingency
         const { rows: updated } = await client.query(
           `UPDATE invoices
            SET cdr_response = $1, updated_at = NOW()
@@ -452,7 +652,7 @@ export async function getAll({ estado } = {}, companyId) {
 
   if (estado && estado.trim() !== '') {
     query = `
-      SELECT i.*, s.total AS sale_total, s.customer_name,
+      SELECT i.*, s.total AS sale_total, s.customer_name, c.pse_provider,
              CASE
                WHEN cn.id IS NOT NULL THEN json_build_object(
                  'id', cn.id,
@@ -461,12 +661,17 @@ export async function getAll({ estado } = {}, companyId) {
                  'estado', cn.estado,
                  'motivo_code', cn.motivo_code,
                  'motivo_descripcion', cn.motivo_descripcion,
+                 'pdf_url', cn.pdf_url,
+                 'xml_url', cn.xml_url,
+                 'hash', cn.hash,
+                 'qr_string', cn.qr_string,
                  'created_at', cn.created_at
                )
                ELSE NULL
              END AS credit_note
       FROM   invoices i
       JOIN   sales    s  ON s.id = i.sale_id
+      JOIN   companies c ON c.id = i.company_id
       LEFT JOIN credit_notes cn ON cn.invoice_id = i.id AND cn.company_id = i.company_id
       WHERE  i.company_id = $1 AND i.estado = $2
       ORDER  BY i.id ASC
@@ -474,7 +679,7 @@ export async function getAll({ estado } = {}, companyId) {
     params = [companyId, estado.trim()];
   } else {
     query = `
-      SELECT i.*, s.total AS sale_total, s.customer_name,
+      SELECT i.*, s.total AS sale_total, s.customer_name, c.pse_provider,
              CASE
                WHEN cn.id IS NOT NULL THEN json_build_object(
                  'id', cn.id,
@@ -483,12 +688,17 @@ export async function getAll({ estado } = {}, companyId) {
                  'estado', cn.estado,
                  'motivo_code', cn.motivo_code,
                  'motivo_descripcion', cn.motivo_descripcion,
+                 'pdf_url', cn.pdf_url,
+                 'xml_url', cn.xml_url,
+                 'hash', cn.hash,
+                 'qr_string', cn.qr_string,
                  'created_at', cn.created_at
                )
                ELSE NULL
              END AS credit_note
       FROM   invoices i
       JOIN   sales    s  ON s.id = i.sale_id
+      JOIN   companies c ON c.id = i.company_id
       LEFT JOIN credit_notes cn ON cn.invoice_id = i.id AND cn.company_id = i.company_id
       WHERE  i.company_id = $1
       ORDER  BY i.id ASC
@@ -511,7 +721,8 @@ export async function getTicketData(id, companyId) {
             s.payment_method, s.created_at AS sale_date,
             c.ruc AS comp_ruc, c.razon_social AS comp_razon_social,
             c.nombre_comercial AS comp_nombre_comercial, c.direccion AS comp_direccion,
-            c.telefono AS comp_telefono, c.logo_data AS comp_logo_data
+            c.telefono AS comp_telefono, c.logo_data AS comp_logo_data,
+            c.pse_provider AS comp_pse_provider
      FROM   invoices i
      JOIN   sales    s ON s.id = i.sale_id
      JOIN   companies c ON c.id = i.company_id
@@ -555,10 +766,15 @@ export async function getTicketData(id, companyId) {
     },
     igv_rate: inv.igv_rate != null ? parseFloat(inv.igv_rate) : 0.18,
     comprobante: {
-      type:   inv.comprobante_type,
-      serie:  inv.serie,
-      numero: inv.numero,
-      estado: inv.estado,
+      type:         inv.comprobante_type,
+      serie:        inv.serie,
+      numero:       inv.numero,
+      estado:       inv.estado,
+      pdf_url:      inv.pdf_url,
+      xml_url:      inv.xml_url,
+      hash:         inv.hash,
+      qr_string:    inv.qr_string,
+      pse_provider: inv.comp_pse_provider,
     },
     customer: {
       name:           inv.customer_name ?? 'Consumidor Final',
@@ -611,7 +827,8 @@ export async function getCreditNoteTicketData(id, companyId) {
             s.created_at AS sale_date,
             c.ruc AS comp_ruc, c.razon_social AS comp_razon_social,
             c.nombre_comercial AS comp_nombre_comercial, c.direccion AS comp_direccion,
-            c.telefono AS comp_telefono, c.logo_data AS comp_logo_data
+            c.telefono AS comp_telefono, c.logo_data AS comp_logo_data,
+            c.pse_provider AS comp_pse_provider
      FROM   credit_notes cn
      JOIN   invoices     i  ON i.id = cn.invoice_id
      JOIN   sales        s  ON s.id = cn.sale_id
@@ -660,6 +877,11 @@ export async function getCreditNoteTicketData(id, companyId) {
       motivo_code:        cn.motivo_code,
       motivo_descripcion: cn.motivo_descripcion,
       created_at:         cn.created_at,
+      pdf_url:            cn.pdf_url,
+      xml_url:            cn.xml_url,
+      hash:               cn.hash,
+      qr_string:          cn.qr_string,
+      pse_provider:       cn.comp_pse_provider,
     },
     modified_document: {
       type:   cn.inv_type,
@@ -712,16 +934,79 @@ export async function retryCreditNoteContingency(id, companyId, userId = null) {
       );
     }
 
+    const { rows: compRows } = await client.query(
+      `SELECT id, ruc, razon_social, direccion, nombre_comercial, pse_provider, pse_url, pse_token_enc
+       FROM companies WHERE id = $1`,
+      [companyId]
+    );
+    const company = compRows[0];
+
+    const { rows: invRows } = await client.query(
+      `SELECT * FROM invoices WHERE id = $1 AND company_id = $2`,
+      [cn.invoice_id, companyId]
+    );
+    const invoice = invRows[0];
+
+    const { rows: saleRows } = await client.query(
+      `SELECT * FROM sales WHERE id = $1 AND company_id = $2`,
+      [cn.sale_id, companyId]
+    );
+    const sale = saleRows[0] || {};
+
+    const { rows: saleItems } = await client.query(
+      `SELECT si.quantity, si.unit_price, si.subtotal,
+              p.name AS product_name, k.name AS kit_name
+       FROM sale_items si
+       LEFT JOIN products p ON p.id = si.product_id
+       LEFT JOIN kits k ON k.id = si.kit_id
+       WHERE si.sale_id = $1`,
+      [cn.sale_id]
+    );
+    sale.items = saleItems;
+
+    const provider = getPseProvider(company);
+    const pseDoc = buildPseDocument({
+      comprobanteType: invoice?.comprobante_type,
+      serie: cn.serie,
+      numero: cn.numero,
+      sale,
+      customerDocType: invoice?.customer_document_type,
+      customerDocNumber: invoice?.customer_document_number,
+      creditNote: cn,
+      invoiceModificado: invoice,
+    });
+
     let updatedCn;
     try {
-      const pseResult = await sendComprobante({ xml: cn.xml_content, simulatePseDown: false });
+      const pseResult = await provider.send({
+        type: 'credit_note',
+        company,
+        document: pseDoc,
+        simulatePseDown: false,
+      });
 
+      const finalEstado = pseResult.accepted ? 'accepted' : 'rejected';
       const { rows: updated } = await client.query(
         `UPDATE credit_notes
-         SET estado = 'accepted', cdr_response = $1, updated_at = NOW()
-         WHERE id = $2 AND company_id = $3
+         SET estado = $1,
+             cdr_response = $2,
+             pdf_url = $3,
+             xml_url = $4,
+             hash = $5,
+             qr_string = $6,
+             updated_at = NOW()
+         WHERE id = $7 AND company_id = $8
          RETURNING *`,
-        [JSON.stringify(pseResult.cdr), id, companyId]
+        [
+          finalEstado,
+          JSON.stringify(pseResult.raw ?? { description: pseResult.sunat_description }),
+          pseResult.pdf_url ?? null,
+          pseResult.xml_url ?? null,
+          pseResult.hash ?? null,
+          pseResult.qr_string ?? null,
+          id,
+          companyId,
+        ]
       );
       updatedCn = updated[0];
 
@@ -760,3 +1045,4 @@ export async function retryCreditNoteContingency(id, companyId, userId = null) {
     client.release();
   }
 }
+

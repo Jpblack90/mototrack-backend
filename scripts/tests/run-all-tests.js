@@ -13,6 +13,7 @@
 // 10. pickup
 // 11. whatsapp
 // 12. company
+// 13. pse
 //
 // Reinicia los contadores de rate limit entre suites para evitar que suites
 // intensivas (como test:onboarding con 50 logins fallidos) bloqueen las siguientes.
@@ -42,6 +43,7 @@ const SUITES = [
   { name: 'pickup',       script: 'scripts/tests/verify-12-5.js' },
   { name: 'whatsapp',     script: 'scripts/tests/verify-12-6.js' },
   { name: 'company',      script: 'scripts/tests/verify-11-2b.js' },
+  { name: 'pse',          script: 'scripts/tests/verify-13-1.js' },
 ];
 
 async function resetRateLimit() {

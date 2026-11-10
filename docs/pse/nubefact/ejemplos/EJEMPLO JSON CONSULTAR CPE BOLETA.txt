@@ -1,0 +1,6 @@
+{
+  "operacion": "consultar_comprobante",
+  "tipo_de_comprobante": "2",
+  "serie": "BBB1",
+  "numero": "1"
+}

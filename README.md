@@ -101,10 +101,46 @@ El sistema soporta el envío de avisos sobre el estado de la moto a los clientes
 - **Fase 2 (Programada para Fase 13 - Automatización total):**
   - Integración nativa con la API oficial de Meta (WhatsApp Business Cloud API) para despacho 100% automático desatendido y plantillas verificadas.
 
+## Facturación Electrónica PSE ("Trae tu Facturador" / Nubefact)
+
+El sistema soporta la integración con Proveedores de Servicios Electrónicos (PSE) bajo el modelo **"trae tu facturador"**: cada taller conecta su propia cuenta de Nubefact (ruta de API y token de autorización) o utiliza el modo simulado de desarrollo (RF-23, RF-28, RF-29).
+
+### 1. Variables de Entorno y Cifrado
+- **`PSE_ENCRYPTION_KEY`** (requerida): clave simétrica de 32 bytes codificada en Base64 para cifrar los tokens de autorización del PSE con **AES-256-GCM** (con IV de 12 bytes y auth tag de 16 bytes).
+  ```bash
+  # Generar una clave segura de 32 bytes en base64:
+  node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+  ```
+- **Zero-Leak de Credenciales**: el token descifrado nunca se retorna en las respuestas de la API (`GET /api/company` devuelve únicamente `pse_token_set: boolean` y `pse_token_last4: string`) ni se expone en `audit_logs` ni en los logs de consola del servidor.
+
+### 2. Endpoints de Configuración PSE y Series (Admin)
+- `PUT /api/company`: actualiza la configuración de la empresa incluyendo proveedor (`pse_provider`: `'simulado'` | `'nubefact'`), ruta de API (`pse_url`), token opcional (`pse_token`) y series por defecto (`series_boleta`, `series_factura`, `series_nc_boleta`, `series_nc_factura`).
+- `POST /api/company/pse/test`: prueba de conectividad y autenticación con Nubefact (`consultar_comprobante` dummy) sin persistir los cambios en la base de datos.
+- `GET /api/company/series`: lista el último correlativo emitido (`last_number`) para cada una de las series configuradas del taller (`B001`, `F001`, `BC01`, `FC01`).
+- `PUT /api/company/series/:serie`: ajuste manual de correlativo por parte del administrador. Por seguridad tributaria, únicamente permite incrementar el valor (`last_number`), rechazando decrementos con código 422.
+
+### 3. Emisión Desacoplada e Idempotencia
+- **Despacho Post-COMMIT**: el comprobante o nota de crédito se crea con estado `pending` dentro de la transacción local de PostgreSQL (`invoices` / `credit_notes`). La llamada HTTP externa al PSE se efectúa **fuera y después del `COMMIT`**, garantizando que un fallo o timeout de red nunca revierta los registros financieros de la base de datos.
+- **Resolución Automática de Duplicados**: si Nubefact responde con un error de comprobante duplicado (Código 23: `"Este documento ya existe en NubeFacT"`), el adaptador ejecuta automáticamente `consultar_comprobante`, recuperando los enlaces oficiales de PDF/XML, el código hash y la cadena QR devueltos por SUNAT. Si la consulta determina que el comprobante no existe (Código 24), el comprobante queda en contingencia y se audita con prefijo `[PSE]`.
+
+### 4. Documentación Oficial y Ejemplos de Referencia (`Sistema/docs/pse/`)
+En el directorio `docs/pse/nubefact/` se almacenan las especificaciones oficiales descargadas directamente desde los canales de Nubefact:
+- `docs/pse/nubefact/MANUAL_INTEGRACION_JSON.pdf`: Manual oficial completo de integración JSON (enlace oficial desde https://www.nubefact.com/integracion).
+- `docs/pse/nubefact/MANUAL_INTEGRACION_JSON.txt`: Versión texto estructurado del manual para búsqueda y auditoría de campos y códigos de error (Pág. 15: Códigos 10, 20, 21, 23, 24).
+- `docs/pse/nubefact/EJEMPLOS-DE-ARCHIVOS-JSON.zip` y subcarpeta `ejemplos/`: Archivos JSON oficiales de ejemplo para boletas (`EJEMPLO JSON GENERAR CPE BOLETA 1 GRAVADA.txt`), facturas (`EJEMPLO JSON GENERAR CPE FACTURA 1 GRAVADA.txt`), notas de crédito (`EJEMPLO JSON GENERAR CPE NOTA CREDITO 1 PARA FACTURA.txt`) y consultas (`EJEMPLO JSON CONSULTAR CPE BOLETA.txt`), descargados desde https://www.nubefact.com/downloads/EJEMPLOS-DE-ARCHIVOS-JSON.
+
 ## Verificación y Suites de Pruebas
 
 Para validar el correcto funcionamiento de la plataforma y el aislamiento multi-tenant:
 
+- **Pruebas de Facturación Electrónica PSE Nubefact (Tarea 13.1):**
+  ```bash
+  npm run test:pse
+  ```
+- **Ejecución Completa de Todas las Suites de Pruebas (13 suites):**
+  ```bash
+  npm run test:all
+  ```
 - **Pruebas de Avisos por WhatsApp (Tarea 12.6):**
   ```bash
   npm run test:whatsapp

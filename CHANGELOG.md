@@ -4,6 +4,36 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Fase 13 - Tarea 13.1)
+- Facturación electrónica con modelo "Trae tu Facturador" (PSE Nubefact / Simulado) (RF-23, RF-28, RF-29):
+  - Migración `scripts/migrations/014_pse_config.sql`:
+    - Adición a `companies`: `pse_provider` (`'simulado'|'nubefact'`, default `'simulado'`), `pse_url`, `pse_token_enc`, `series_boleta` (default `'B001'`), `series_factura` (default `'F001'`), `series_nc_boleta` (default `'BC01'`), `series_nc_factura` (default `'FC01'`) (Jean Pool)
+    - Adición a `invoices` y `credit_notes`: `pdf_url`, `xml_url`, `hash`, `qr_string` (Jean Pool)
+  - Módulo de cifrado seguro `src/shared/utils/crypto.js`: funciones `encrypt(plainText)` y `decrypt(cipherText)` mediante algoritmo **AES-256-GCM** con IV aleatorio de 12 bytes y etiqueta de autenticación (auth tag) de 16 bytes a partir de la variable de entorno `PSE_ENCRYPTION_KEY` (Jean Pool)
+  - Patrón Adaptador de Proveedores PSE en `src/modules/invoicing/pse/`:
+    - `index.js`: factory `getPseProvider(company)` resolviendo la instancia según `company.pse_provider` (Jean Pool)
+    - `simulated.js`: adaptador para entorno de pruebas y desarrollo, manteniendo compatibilidad con emisión simulada, contingencia y rechazos forzados (Jean Pool)
+    - `nubefact.js`: adaptador oficial bajo el manual de integración JSON de Nubefact:
+      - Operación `generar_comprobante` y `consultar_comprobante` con cabecera `Authorization: Token token="..."` (Jean Pool)
+      - Mapeo estricto del payload oficial: `tipo_de_comprobante` (1: Factura, 2: Boleta, 3: Nota de Crédito), códigos de documento de cliente (`tipo_de_comprobante_cliente`), catálogos SUNAT y detalle de ítems (Jean Pool)
+      - Emisión de notas de crédito con `documento_que_se_modifica_tipo`, `documento_que_se_modifica_serie`, `documento_que_se_modifica_numero` y `tipo_de_nota_de_credito` según Catálogo 09 (Jean Pool)
+      - Detección y manejo resiliente de errores: autenticación (`PSE_AUTH_FAILED`), indisponibilidad/timeout (`PSE_UNAVAILABLE`) y resolución automática de duplicados ("ya existe") ejecutando `consultar_comprobante` (Jean Pool)
+  - Configuración y seguridad multi-tenant en `src/modules/company/`:
+    - Validaciones estrictas: `isValidPseUrl(url)` (HTTPS en `nubefact.com` en producción, hosts locales permitidos bajo test hooks) y `isValidSerie(serie)` (4 caracteres alfanuméricos) (Jean Pool)
+    - Zero-Leak de credenciales: `GET /api/company` enmascara el token (`pse_token_set: boolean`, `pse_token_last4: string`) y la auditoría registra `diff.pse_token = { new: 'token PSE actualizado' }` sin almacenar el texto en claro (Jean Pool)
+    - Endpoint `POST /api/company/pse/test`: prueba de conexión y credenciales con Nubefact sin persistencia en base de datos (Jean Pool)
+    - Endpoints de series y correlativos: `GET /api/company/series` y `PUT /api/company/series/:serie` permitiendo únicamente ajustes incrementales (`last_number`) (Jean Pool)
+  - Despacho desacoplado y contingencia en `src/modules/invoicing/invoicing.service.js` y `src/modules/sales/sales.service.js`:
+    - `createInvoice`: persistencia en base de datos con estado `pending` en transacción local, seguida del despacho HTTP externo post-COMMIT; manejo de aceptado, contingencia o rechazado según respuesta del PSE (Jean Pool)
+    - `voidSale`: anulación con emisión de nota de crédito post-COMMIT usando la serie configurada del taller (`series_nc_factura` / `series_nc_boleta`) (Jean Pool)
+    - `retryContingency` y `retryCreditNoteContingency`: reintento de comprobantes en contingencia delegados al adaptador PSE correspondiente (Jean Pool)
+  - Frontend (`mototrack-frontend`):
+    - Configuración PSE en `src/pages/SettingsPage.jsx`: Card "Facturación Electrónica (PSE)" con selector Simulado vs Nubefact, inputs de ruta y series, token enmascarado con botón "Reemplazar", botón "Probar conexión" y tabla interactiva de correlativos con `AlertDialog` que previene decrementos (Jean Pool)
+    - Visualización de ticket en `src/components/invoicing/TicketView.jsx`: renderizado dinámico de código QR mediante librería `qrcode`, hash oficial, texto legal del tipo de comprobante, botón "Ver PDF oficial" y banner de advertencia si el comprobante es simulado (Jean Pool)
+    - Indicador de estado en `src/pages/InvoicingPage.jsx`: Badge del proveedor PSE activo en el encabezado y tooltip interactivo con el motivo de rechazo SUNAT (`sunat_description`) en comprobantes rechazados (Jean Pool)
+  - Suite de pruebas de integración `scripts/tests/verify-13-1.js` (`npm run test:pse`): 72 pruebas automatizadas cubriendo los 11 escenarios de configuración, validación, cifrado, emisión, reintentos y notas de crédito con mock server HTTP (Jean Pool)
+  - Integración en runner general `scripts/tests/run-all-tests.js` (`npm run test:all`): incorporada como la suite 13/13 (Jean Pool)
+
 ### Changed (Fase 13 - Tarea 13.0b)
 - Ajustes de compatibilidad, auditoría, seeds y pruebas del backend:
   - Migración `scripts/migrations/013_unaccent.sql`: habilitación de la extensión PostgreSQL `unaccent` para ignorar acentos y diacríticos en comparaciones de texto (Jean Pool)

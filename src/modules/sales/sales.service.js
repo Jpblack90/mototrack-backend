@@ -1,7 +1,8 @@
 import pool from '../../config/database.js';
 import { logAudit } from '../../shared/audit.js';
 import { decrementStock, restoreStock } from '../inventory/inventory.service.js';
-import { buildCreditNoteXml } from '../invoicing/invoicing.service.js';
+import { buildCreditNoteXml, buildPseDocument } from '../invoicing/invoicing.service.js';
+import { getPseProvider } from '../invoicing/pse/index.js';
 import { sendComprobante } from '../invoicing/invoicing.pseClient.js';
 import { testHooksEnabled } from '../../shared/utils/testHooks.js';
 
@@ -546,6 +547,10 @@ export async function voidSale(id, options, companyId, userId = null) {
   const client = await pool.connect();
   let createdNc = null;
   let updatedSale = null;
+  let company = null;
+  let invoice = null;
+  let sale = null;
+  let saleItemsFull = [];
 
   try {
     await client.query('BEGIN');
@@ -558,7 +563,7 @@ export async function voidSale(id, options, companyId, userId = null) {
     if (!saleRows[0]) {
       throw new AppError(`Venta con id ${id} no encontrada.`, 'SALE_NOT_FOUND', 404);
     }
-    const sale = saleRows[0];
+    sale = saleRows[0];
     if (sale.status === 'voided') {
       throw new AppError(`La venta #${id} ya estaba anulada.`, 'ALREADY_VOIDED', 409);
     }
@@ -568,7 +573,7 @@ export async function voidSale(id, options, companyId, userId = null) {
       `SELECT * FROM invoices WHERE sale_id = $1 AND company_id = $2 FOR UPDATE`,
       [id, companyId]
     );
-    const invoice = invoiceRows[0] ?? null;
+    invoice = invoiceRows[0] ?? null;
 
     if (invoice) {
       if (invoice.estado === 'pending' || invoice.estado === 'contingency') {
@@ -589,7 +594,18 @@ export async function voidSale(id, options, companyId, userId = null) {
           );
         }
 
-        const ncSerie = invoice.comprobante_type === 'factura' ? 'FC01' : 'BC01';
+        // Datos de la empresa para series y XML
+        const { rows: compRows } = await client.query(
+          `SELECT id, ruc, razon_social, direccion, nombre_comercial, pse_provider, pse_url, pse_token_enc,
+                  series_boleta, series_factura, series_nc_boleta, series_nc_factura
+           FROM companies WHERE id = $1`,
+          [companyId]
+        );
+        company = compRows[0] ?? {};
+
+        const ncSerie = invoice.comprobante_type === 'factura'
+          ? (company.series_nc_factura || 'FC01')
+          : (company.series_nc_boleta || 'BC01');
 
         // Correlativo atómico
         const { rows: seriesRows } = await client.query(
@@ -602,15 +618,8 @@ export async function voidSale(id, options, companyId, userId = null) {
         );
         const ncNumero = seriesRows[0].last_number;
 
-        // Datos de la empresa para XML
-        const { rows: compRows } = await client.query(
-          `SELECT ruc, razon_social, direccion, nombre_comercial FROM companies WHERE id = $1`,
-          [companyId]
-        );
-        const company = compRows[0] ?? {};
-
         // Items de la venta para XML
-        const { rows: saleItemsFull } = await client.query(
+        const { rows: itemsDb } = await client.query(
           `SELECT si.quantity, si.unit_price, si.subtotal,
                   p.name AS product_name,
                   k.name AS kit_name
@@ -620,6 +629,7 @@ export async function voidSale(id, options, companyId, userId = null) {
            WHERE  si.sale_id = $1`,
           [id]
         );
+        saleItemsFull = itemsDb;
 
         const xmlContent = buildCreditNoteXml({
           sale: { ...sale, items: saleItemsFull },
@@ -724,16 +734,50 @@ export async function voidSale(id, options, companyId, userId = null) {
     client.release();
   }
 
-  // 6. Fuera de la transacción: enviar NC al PSE simulado si aplica
-  if (createdNc) {
+  // 6. Fuera de la transacción: enviar NC al PSE según proveedor configurado
+  if (createdNc && company) {
+    const provider = getPseProvider(company);
+    const pseDoc = buildPseDocument({
+      comprobanteType: invoice?.comprobante_type,
+      serie: createdNc.serie,
+      numero: createdNc.numero,
+      sale: { ...sale, items: saleItemsFull },
+      customerDocType: invoice?.customer_document_type,
+      customerDocNumber: invoice?.customer_document_number,
+      creditNote: createdNc,
+      invoiceModificado: invoice,
+    });
+
     try {
-      const pseResult = await sendComprobante({ xml: createdNc.xml_content, simulatePseDown: false });
+      const pseResult = await provider.send({
+        type: 'credit_note',
+        company,
+        document: pseDoc,
+        simulatePseDown: false,
+      });
+
+      const finalEstado = pseResult.accepted ? 'accepted' : 'rejected';
       const { rows: updatedNcRows } = await pool.query(
         `UPDATE credit_notes
-         SET estado = 'accepted', cdr_response = $1, updated_at = NOW()
-         WHERE id = $2 AND company_id = $3
+         SET estado = $1,
+             cdr_response = $2,
+             pdf_url = $3,
+             xml_url = $4,
+             hash = $5,
+             qr_string = $6,
+             updated_at = NOW()
+         WHERE id = $7 AND company_id = $8
          RETURNING *`,
-        [JSON.stringify(pseResult.cdr), createdNc.id, companyId]
+        [
+          finalEstado,
+          JSON.stringify(pseResult.raw ?? { description: pseResult.sunat_description }),
+          pseResult.pdf_url ?? null,
+          pseResult.xml_url ?? null,
+          pseResult.hash ?? null,
+          pseResult.qr_string ?? null,
+          createdNc.id,
+          companyId,
+        ]
       );
       createdNc = updatedNcRows[0];
     } catch (pseErr) {

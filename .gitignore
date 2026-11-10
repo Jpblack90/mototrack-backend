@@ -6,3 +6,7 @@ dist/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Documentos binarios de terceros (se conservan en local, no se redistribuyen en el repo público)
+docs/pse/nubefact/*.pdf
+docs/pse/nubefact/*.zip

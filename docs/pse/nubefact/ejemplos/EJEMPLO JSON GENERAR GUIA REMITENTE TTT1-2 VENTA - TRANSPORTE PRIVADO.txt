@@ -1,0 +1,52 @@
+{
+	"operacion": "generar_guia",
+	"tipo_de_comprobante": 7,
+	"serie": "TTT1",
+	"numero": "1",
+	"cliente_tipo_de_documento": 6,
+	"cliente_numero_de_documento": "20600695771",
+	"cliente_denominacion": "NUBEFACT SA",
+	"cliente_direccion": "MIRAFLORES LIMA",
+	"cliente_email": "demo@gmail.com",
+	"cliente_email_1": "",
+	"cliente_email_2": "",
+	"fecha_de_emision": "04-11-2026",
+	"observaciones": "observaciones",
+	"motivo_de_traslado": "01",
+	"peso_bruto_total": "1",
+	"peso_bruto_unidad_de_medida": "KGM",
+	"numero_de_bultos": "1",
+	"tipo_de_transporte": "02",
+	"fecha_de_inicio_de_traslado": "21-12-2022",
+	"transportista_documento_tipo": "6",
+	"transportista_documento_numero": "20600695771",
+	"transportista_denominacion": "NUBEFACT SA",
+	"transportista_placa_numero": "ABC444",
+	"conductor_documento_tipo": "1",
+	"conductor_documento_numero": "XXXXXXXX",
+	"conductor_nombre": "JORGE",
+	"conductor_apellidos": "LOPEZ",
+	"conductor_numero_licencia": "QXXXXXXXX",
+	"punto_de_partida_ubigeo": "151021",
+	"punto_de_partida_direccion": "DIRECCION PARTIDA",
+	"punto_de_partida_codigo_establecimiento_sunat": "0000",
+	"punto_de_llegada_ubigeo": "211101",
+	"punto_de_llegada_direccion": "DIRECCION LLEGADA",
+	"punto_de_llegada_codigo_establecimiento_sunat": "0000",
+	"enviar_automaticamente_al_cliente": "false",
+	"formato_de_pdf": "",
+	"items": [
+		{
+			"unidad_de_medida": "NIU",
+			"codigo": "001",
+			"descripcion": "DETALLE DEL PRODUCTO 1",
+			"cantidad": "1"
+		},
+		{
+			"unidad_de_medida": "NIU",
+			"codigo": "002",
+			"descripcion": "DETALLE DEL PRODUCTO 2",
+			"cantidad": "1"
+		}
+	]
+}

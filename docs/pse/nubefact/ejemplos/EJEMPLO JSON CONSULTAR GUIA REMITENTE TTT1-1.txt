@@ -1,0 +1,6 @@
+{
+	"operacion": "consultar_guia",
+	"tipo_de_comprobante": 7,
+	"serie": "TTT1",
+	"numero": "1"
+}

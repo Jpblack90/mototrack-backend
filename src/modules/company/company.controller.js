@@ -43,3 +43,48 @@ export async function getCompanyPlan(req, res, next) {
     next(err);
   }
 }
+
+/**
+ * POST /api/company/pse/test
+ * Prueba la conectividad con Nubefact usando consultar_comprobante (solo Administradores).
+ */
+export async function testPse(req, res, next) {
+  try {
+    const result = await companyService.testPseConnection(req.user.company_id, req.body);
+    ok(res, result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/company/series
+ * Devuelve las series configuradas de la empresa con sus correlativos actuales.
+ */
+export async function getCompanySeries(req, res, next) {
+  try {
+    const series = await companyService.getSeries(req.user.company_id);
+    ok(res, series);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * PUT /api/company/series/:serie
+ * Ajusta el correlativo inicial o último número de una serie (solo Administradores).
+ */
+export async function updateSerie(req, res, next) {
+  try {
+    const { last_number } = req.body;
+    const result = await companyService.updateSerieCorrelative(
+      req.user.company_id,
+      req.params.serie,
+      last_number,
+      req.user?.id ?? null
+    );
+    ok(res, result);
+  } catch (err) {
+    next(err);
+  }
+}
