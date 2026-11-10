@@ -1,0 +1,6 @@
+# HTTPS automático (Let's Encrypt) para el dominio definido en .env.prod (DOMAIN).
+# Todo el tráfico va a nginx (frontend), que sirve la web y reenvía /api al backend.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy frontend:80
+}

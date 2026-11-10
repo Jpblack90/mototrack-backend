@@ -1,0 +1,93 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# MotoTrack AI — Producción (VM de Google Cloud con Docker)
+#
+# Estructura esperada en la VM (carpeta ~/mototrack):
+#   ~/mototrack/Sistema              ← repo mototrack-backend
+#   ~/mototrack/mototrack-frontend   ← repo mototrack-frontend
+#   ~/mototrack/.env.prod            ← secretos (NUNCA en git)
+#
+# Uso (desde ~/mototrack):
+#   docker compose -f Sistema/deploy/docker-compose.prod.yml --env-file .env.prod up -d --build
+#
+# Diferencias con el compose de desarrollo:
+#   - Solo Caddy publica puertos (80/443, HTTPS automático). La BD y el backend
+#     NO quedan expuestos a internet.
+#   - NODE_ENV=production, sin trampas de prueba, TRUST_PROXY=2 (Caddy → nginx).
+#   - restart: unless-stopped (vuelven solos si la VM se reinicia).
+#   - La BD no ejecuta los schema*.sql al iniciar: se restaura desde un respaldo
+#     (ver README.md) o se instala limpia con scripts/instalacion-limpia.sh.
+# ─────────────────────────────────────────────────────────────────────────────
+name: mototrack
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ..
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV:       production
+      DB_HOST:        db
+      DB_PORT:        5432
+      DB_USER:        ${POSTGRES_USER}
+      DB_PASSWORD:    ${POSTGRES_PASSWORD}
+      DB_NAME:        ${POSTGRES_DB}
+      PORT:           4000
+      JWT_SECRET:     ${JWT_SECRET}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      AI_TIMEOUT_MS:  ${AI_TIMEOUT_MS:-20000}
+      DEMO_USERS_PASSWORD:       ${DEMO_USERS_PASSWORD:-}
+      JOBS_TOKEN:                ${JOBS_TOKEN}
+      JOB_NOT_PICKED_UP_MINUTES: ${JOB_NOT_PICKED_UP_MINUTES:-60}
+      JOB_SUBSCRIPTIONS_MINUTES: ${JOB_SUBSCRIPTIONS_MINUTES:-60}
+      BILLING_GRACE_DAYS:        ${BILLING_GRACE_DAYS:-5}
+      PAYMENT_INSTRUCTIONS:      ${PAYMENT_INSTRUCTIONS:-}
+      PSE_ENCRYPTION_KEY:        ${PSE_ENCRYPTION_KEY}
+      ENABLE_TEST_HOOKS:         ""
+      TRUST_PROXY:               "2"
+
+  frontend:
+    build:
+      context: ../../mototrack-frontend
+      args:
+        VITE_API_URL: /api
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - frontend
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
