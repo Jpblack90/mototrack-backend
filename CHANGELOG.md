@@ -4,6 +4,12 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Fixed (Fase 14 - Tarea 14.1b)
+- Bloqueo de bypass de aprobación del cliente para el rol mecánico:
+  - `src/modules/workorders/workorders.service.js`: si la orden de trabajo se encuentra en estado `pendiente_aprobacion`, el mecánico no puede forzar la transición a `en_reparacion`, arrojando HTTP 403 `APPROVAL_REQUIRED` ("Esta orden espera la aprobación del cliente. Solo el cajero o el admin pueden aprobarla.") (Jean Pool)
+  - `src/modules/workorders/workorders.controller.js`: mapeo explícito de `APPROVAL_REQUIRED` a código de estado HTTP 403 en `httpStatusFromCode` (Jean Pool)
+  - `scripts/tests/verify-14-1.js`: 2 pruebas automatizadas añadidas verificando que el mecánico es bloqueado con 403 y la OT permanece en `pendiente_aprobacion` en BD, y que el cajero puede aprobarla exitosamente mediante `PATCH /:id/approve` (Jean Pool)
+
 ### Added (Fase 14 - Tarea 14.1)
 - Restricciones RBAC para el rol mecánico en órdenes de trabajo:
   - `src/modules/workorders/workorders.controller.js` y `workorders.service.js`:

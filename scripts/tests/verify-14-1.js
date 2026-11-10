@@ -104,6 +104,13 @@ async function run() {
       company_id: companyA.companyId,
     });
 
+    const tokenCajeroA = makeToken({
+      id: companyA.cajeroId,
+      email: companyA.cajeroEmail,
+      role: 'cajero',
+      company_id: companyA.companyId,
+    });
+
     // ─── CASO 1: Mecánico A avanza su OT: recibido → diagnostico → en_reparacion → terminado ─────
     console.log('\n--- Caso 1: Flujo feliz del mecánico sobre su OT asignada ---');
     const { rows: [ot1] } = await pool.query(
@@ -169,6 +176,35 @@ async function run() {
     assert(
       resOverCost.status === 200 && resOverCost.data?.data?.status === 'pendiente_aprobacion',
       'diagnostico → en_reparacion con additional_cost mayor al umbral → queda pendiente_aprobacion (200)'
+    );
+
+    // ─── CASO 2b (14.1b): Mecánico A intenta avanzar OT en pendiente_aprobacion → 403 APPROVAL_REQUIRED ───
+    console.log('\n--- Caso 2b: Mecánico A intenta avanzar OT en pendiente_aprobacion ---');
+    const resBypass = await request(`/workorders/${ot2.id}/status`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${tokenMechanicA}` },
+      body: { status: 'en_reparacion' },
+    });
+    const { rows: [dbOt2] } = await pool.query('SELECT status FROM work_orders WHERE id = $1', [ot2.id]);
+    assert(
+      resBypass.status === 403 &&
+        resBypass.data?.error?.code === 'APPROVAL_REQUIRED' &&
+        resBypass.data?.error?.message === 'Esta orden espera la aprobación del cliente. Solo el cajero o el admin pueden aprobarla.' &&
+        dbOt2.status === 'pendiente_aprobacion',
+      'Mecánico A con su OT en pendiente_aprobacion pide "en_reparacion" → 403 APPROVAL_REQUIRED y la OT sigue en pendiente_aprobacion en BD',
+      resBypass
+    );
+
+    // ─── CASO 2c (14.1b): El cajero A aprueba con PATCH /:id/approve → en_reparacion ───
+    console.log('\n--- Caso 2c: Cajero A aprueba con PATCH /:id/approve ---');
+    const resApprove = await request(`/workorders/${ot2.id}/approve`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${tokenCajeroA}` },
+    });
+    assert(
+      resApprove.status === 200 && resApprove.data?.data?.status === 'en_reparacion',
+      'El cajero A aprueba con PATCH /:id/approve → la OT pasa a en_reparacion (200)',
+      resApprove
     );
 
     // ─── CASO 3: Mecánico A sobre OT sin asignar → 403 WORK_ORDER_NOT_ASSIGNED ───

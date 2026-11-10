@@ -400,10 +400,17 @@ export async function updateStatus(
     throw new AppError(`Orden de trabajo #${id} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
   }
 
-  // Restricciones para el rol mecanico (Tarea 14.1)
+  // Restricciones para el rol mecanico (Tarea 14.1 / 14.1b)
   if (userRole === 'mecanico') {
     if (!current.mechanic_id || Number(current.mechanic_id) !== Number(userId)) {
       throw new AppError('Esta orden no está asignada a ti.', 'WORK_ORDER_NOT_ASSIGNED', 403);
+    }
+    if (current.status === 'pendiente_aprobacion') {
+      throw new AppError(
+        'Esta orden espera la aprobación del cliente. Solo el cajero o el admin pueden aprobarla.',
+        'APPROVAL_REQUIRED',
+        403
+      );
     }
     const ALLOWED_MECHANIC_TARGETS = ['diagnostico', 'en_reparacion', 'terminado'];
     if (!ALLOWED_MECHANIC_TARGETS.includes(newStatus)) {

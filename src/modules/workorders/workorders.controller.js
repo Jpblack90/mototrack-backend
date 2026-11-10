@@ -19,6 +19,7 @@ function httpStatusFromCode(code) {
     MECHANIC_NOT_FOUND:          404,
     WORK_ORDER_NOT_ASSIGNED:     403,
     STATUS_NOT_ALLOWED_FOR_ROLE: 403,
+    APPROVAL_REQUIRED:           403,
     INVALID_TRANSITION:          422,
     MISSING_FIELD:               422,
     INVALID_FIELD:               422,
