@@ -4,6 +4,14 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Fase 14 - Tarea 14.2a)
+- Entrada de mercadería al inventario con registro de auditoría (RF-14):
+  - `src/modules/inventory/inventory.routes.js`: nuevo endpoint `POST /api/inventory/:id/stock-entry` con middleware de autenticación y autorización para roles `admin`, `cajero` y `almacenero` (Jean Pool)
+  - `src/modules/inventory/inventory.controller.js`: validación de entrada (`quantity` entero entre 1 y 10000, `note` opcional <= 200 caracteres), devolviendo HTTP 422 ante valores inválidos y HTTP 404 ante productos inexistentes o inactivos (Jean Pool)
+  - `src/modules/inventory/inventory.service.js`: método `recordStockEntry` con transacción atómica, bloqueo de fila concurrente (`SELECT ... FOR UPDATE`), incremento de stock y registro de auditoría en `audit_logs` con acción `stock_entry` detallando stock previo, cantidad añadida, nuevo stock, nota y usuario responsable (Jean Pool)
+  - Suite de pruebas de integración `scripts/tests/verify-14-2.js` (`npm run test:stock-entry`): 6 pruebas automatizadas verificando suma de stock, auditoría, rechazo de cantidades inválidas (0, -3, 2.5, "abc"), aislamiento multi-tenant (HTTP 404 en producto de otra empresa), bloqueo a mecánicos (HTTP 403) y acumulación exacta en entradas sucesivas (Jean Pool)
+  - Integración en runner general `scripts/tests/run-all-tests.js` (`npm run test:all`): incorporada como suite 16/16 (Jean Pool)
+
 ### Fixed (Fase 14 - Tarea 14.1b)
 - Bloqueo de bypass de aprobación del cliente para el rol mecánico:
   - `src/modules/workorders/workorders.service.js`: si la orden de trabajo se encuentra en estado `pendiente_aprobacion`, el mecánico no puede forzar la transición a `en_reparacion`, arrojando HTTP 403 `APPROVAL_REQUIRED` ("Esta orden espera la aprobación del cliente. Solo el cajero o el admin pueden aprobarla.") (Jean Pool)

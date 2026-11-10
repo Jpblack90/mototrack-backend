@@ -270,3 +270,25 @@ export async function scanProduct(req, res, next) {
     next(err);
   }
 }
+
+/**
+ * POST /api/inventory/:id/stock-entry (Tarea 14.2a)
+ * Body: { quantity: entero 1–10000, note?: string ≤ 200 }
+ */
+export async function recordStockEntry(req, res, next) {
+  try {
+    const { quantity, note } = req.body;
+    const updated = await inventoryService.recordStockEntry(
+      req.params.id,
+      { quantity, note },
+      req.user.company_id,
+      req.user?.id ?? null
+    );
+    ok(res, updated);
+  } catch (err) {
+    if (err.statusCode || err.code) {
+      return fail(res, err.message, err.statusCode || 400, err.code);
+    }
+    next(err);
+  }
+}

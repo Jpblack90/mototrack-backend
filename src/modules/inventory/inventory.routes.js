@@ -10,6 +10,7 @@ import {
   scanProduct,
   getAlerts,
   getAlternatives,
+  recordStockEntry,
 } from './inventory.controller.js';
 
 const router = Router();
@@ -25,6 +26,7 @@ router.get('/',                  authenticate,                                  
 router.get('/alerts',            authenticate, authorize('admin','cajero','almacenero'), getAlerts);
 router.post('/scan',             authenticate, authorize('admin','cajero','almacenero'), scanProduct);
 
+router.post('/:id/stock-entry',  authenticate, authorize('admin','cajero','almacenero'), recordStockEntry);
 router.get('/:id/alternatives',  authenticate,                                           getAlternatives);
 router.get('/:id',               authenticate,                                           getItem);
 router.post('/',      authenticate, authorize('admin','cajero','almacenero'), createItem);

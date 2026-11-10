@@ -737,3 +737,99 @@ export async function restoreStock(client, productId, quantity, companyId) {
     [quantity, productId, companyId]
   );
 }
+
+/**
+ * POST /api/inventory/:id/stock-entry (Tarea 14.2a)
+ * Registra una entrada de mercadería para un producto existente.
+ * Transaccional: SELECT ... FOR UPDATE, UPDATE stock = stock + quantity, logAudit.
+ *
+ * @param {number|string} productId
+ * @param {{ quantity: number, note?: string }} data
+ * @param {number} companyId
+ * @param {number} userId
+ * @returns {Promise<object>}
+ */
+export async function recordStockEntry(productId, { quantity, note } = {}, companyId, userId) {
+  // 1. Validaciones
+  if (
+    quantity === undefined ||
+    quantity === null ||
+    typeof quantity !== 'number' ||
+    !Number.isInteger(quantity) ||
+    quantity < 1 ||
+    quantity > 10000
+  ) {
+    throw new AppError(
+      'La cantidad debe ser un número entero entre 1 y 10000.',
+      'INVALID_QUANTITY',
+      422
+    );
+  }
+
+  if (note !== undefined && note !== null) {
+    if (typeof note !== 'string' || note.length > 200) {
+      throw new AppError(
+        'La nota no puede exceder los 200 caracteres.',
+        'INVALID_NOTE',
+        422
+      );
+    }
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 2. SELECT ... FOR UPDATE del producto (company_id + is_active)
+    const { rows } = await client.query(
+      `SELECT * FROM products WHERE id = $1 AND company_id = $2 AND is_active = true FOR UPDATE`,
+      [productId, companyId]
+    );
+
+    if (!rows[0]) {
+      throw new AppError(
+        `Producto #${productId} no encontrado o inactivo.`,
+        'PRODUCT_NOT_FOUND',
+        404
+      );
+    }
+
+    const current = rows[0];
+    const previousStock = Number(current.stock);
+    const newStock = previousStock + quantity;
+
+    // 3. UPDATE stock = stock + quantity
+    const { rows: updatedRows } = await client.query(
+      `UPDATE products
+       SET stock = $1, updated_at = NOW()
+       WHERE id = $2 AND company_id = $3
+       RETURNING *`,
+      [newStock, productId, companyId]
+    );
+
+    const updated = updatedRows[0];
+
+    // 4. logAudit
+    await logAudit(client, {
+      companyId,
+      userId,
+      entity: 'product',
+      entityId: Number(productId),
+      action: 'stock_entry',
+      changes: {
+        stock: { old: previousStock, new: newStock },
+        quantity,
+        note: note ? note.trim() : null,
+      },
+    });
+
+    await client.query('COMMIT');
+    return updated;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+

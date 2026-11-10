@@ -26,6 +26,7 @@
     "test:pse": "node scripts/tests/verify-13-1.js",
     "test:billing": "node scripts/tests/verify-13-2.js",
     "test:mechanic": "node scripts/tests/verify-14-1.js",
+    "test:stock-entry": "node scripts/tests/verify-14-2.js",
     "job:not-picked-up": "node scripts/jobs/run-not-picked-up.js",
     "job:subscriptions": "node scripts/jobs/run-subscriptions.js",
     "test:all": "node scripts/tests/run-all-tests.js"
