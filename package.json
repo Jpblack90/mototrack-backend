@@ -24,7 +24,9 @@
     "test:pickup": "node scripts/tests/verify-12-5.js",
     "test:whatsapp": "node scripts/tests/verify-12-6.js",
     "test:pse": "node scripts/tests/verify-13-1.js",
+    "test:billing": "node scripts/tests/verify-13-2.js",
     "job:not-picked-up": "node scripts/jobs/run-not-picked-up.js",
+    "job:subscriptions": "node scripts/jobs/run-subscriptions.js",
     "test:all": "node scripts/tests/run-all-tests.js"
   },
   "keywords": [

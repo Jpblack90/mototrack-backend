@@ -967,6 +967,34 @@ async function run() {
     await pool.query(`UPDATE notifications SET status = 'skipped' WHERE id = $1`, [notifA.id]);
 
     // ─────────────────────────────────────────────────────────────────────────
+    // CASO 22: Aislamiento en Historial de Pagos de Suscripción (/api/company/payments)
+    // ─────────────────────────────────────────────────────────────────────────
+    console.log('--- Caso 22: Aislamiento en Historial de Pagos (/api/company/payments) ---');
+
+    // 22a: Registrar un pago para Empresa A
+    const { rows: [payIsoA] } = await pool.query(
+      `INSERT INTO subscription_payments (company_id, amount, method, reference, months, period_from, period_to)
+       VALUES ($1, 99.00, 'yape', 'ISO-PAY-A', 1, CURRENT_DATE, CURRENT_DATE + INTERVAL '1 month')
+       RETURNING id`,
+      [companyAId]
+    );
+
+    // 22b: B consulta GET /api/company/payments -> no ve el pago de A
+    const paymentsBRes = await request('/company/payments', {
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    const paymentsBList = paymentsBRes.data?.data || [];
+    const hasAInPaymentsB = paymentsBList.some((p) => p.id === payIsoA.id);
+
+    assert(
+      paymentsBRes.status === 200 && !hasAInPaymentsB,
+      'Empresa B no ve los pagos de suscripción de Empresa A (/api/company/payments)'
+    );
+
+    // Limpieza del pago de aislamiento
+    await pool.query(`DELETE FROM subscription_payments WHERE id = $1`, [payIsoA.id]);
+
+    // ─────────────────────────────────────────────────────────────────────────
     // VERIFICACIÓN FINAL: EMPRESA REAL INTACTA
     // ─────────────────────────────────────────────────────────────────────────
     if (realCompanyId && initialRealCounts) {

@@ -4,6 +4,35 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Fase 13 - Tarea 13.2)
+- Cobro manual de suscripción (Yape, Plin, transferencia, efectivo), vencimiento, avisos y suspensión automática (RF-27):
+  - Migración `scripts/migrations/015_suscripciones.sql`:
+    - Adición a `companies`: columna `paid_until DATE` (NULL por defecto; talleres internos/demo no vencen mientras `status = 'active'`) (Jean Pool)
+    - Creación de tabla `subscription_payments`: `id SERIAL PK`, `company_id NOT NULL FK`, `amount NUMERIC(10,2) NOT NULL CHECK (amount > 0)`, `method VARCHAR(20) NOT NULL CHECK (IN ('yape','plin','transferencia','efectivo'))`, `reference VARCHAR(60)`, `months INTEGER NOT NULL CHECK (months BETWEEN 1 AND 12)`, `period_from DATE NOT NULL`, `period_to DATE NOT NULL`, `notes TEXT`, `created_at TIMESTAMPTZ DEFAULT now()` (Jean Pool)
+  - Módulo y servicio `src/modules/company/subscription.service.js`:
+    - Funciones de cálculo temporal en zona horaria peruana (`America/Lima`): `getLimaDateStr`, `diffDays`, `toDateStr` (Jean Pool)
+    - `recordPayment`: registro de pagos en transacción atómica con extensión no acumulativa de fecha de vencimiento (`nuevo_vencimiento = GREATEST(paid_until, hoy) + N meses`), activación del taller (`status = 'active'`), limpieza de `trial_ends_at = NULL` y registro en `audit_logs` con `action = 'subscription_payment'` (Jean Pool)
+    - `markOverdueSubscriptions`: suspensión automática de empresas vencidas con gracia agotada (`paid_until + BILLING_GRACE_DAYS < hoy`), actualizando a `status = 'suspended'` y registrando auditoría `subscription_suspended_auto` (Jean Pool)
+    - `getCompanyPayments`: consulta de historial de abonos ordenados cronológicamente descendente (Jean Pool)
+    - `getBillingInfo`: resolución de estados de facturación (`trial`, `active`, `grace`, `suspended`), cálculo de días restantes (`days_left`), fecha formateada e instrucciones de pago (Jean Pool)
+  - Script CLI `scripts/record-payment.js`:
+    - Registro de pagos desde terminal con flags `--company`, `--amount`, `--method`, `--ref`, `--months` y `--notes` (Jean Pool)
+  - Job programado de suspensión:
+    - Endpoint HTTP `POST /api/jobs/subscriptions` en `src/modules/jobs/` validado con `X-Job-Token` (Jean Pool)
+    - Runner de terminal `scripts/jobs/run-subscriptions.js` (Jean Pool)
+    - Planificador interno `src/modules/jobs/subscriptions.scheduler.js` integrado en `server.js` configurable mediante `JOB_SUBSCRIPTIONS_MINUTES` (Jean Pool)
+  - Autenticación y control de acceso:
+    - Retorno HTTP 403 `SUBSCRIPTION_EXPIRED` en `src/modules/auth/auth.service.js` y `src/shared/middlewares/authenticate.js` únicamente para empresas con `status === 'suspended'` y `paid_until < hoy`, proporcionando fecha de expiración e instrucciones de abono (Jean Pool)
+    - Endpoints multi-tenant en `src/modules/company/`: `GET /api/company/plan` ampliado con objeto `billing` e instrucciones (solo para admin), y `GET /api/company/payments` con control de permisos y aislamiento de datos (Jean Pool)
+  - Frontend (`mototrack-frontend`):
+    - Hook `src/hooks/usePayments.js` para consumo de historial de pagos (Jean Pool)
+    - Card "Mi Plan" en `src/pages/SettingsPage.jsx`: badge de vigencia ("Pagado hasta: ..."), alertas de advertencia/destructiva con instrucciones de pago y tabla detallada con el historial de abonos (Jean Pool)
+    - Banner global de advertencia en `src/components/layout/AppLayout.jsx`: visible exclusivamente para administradores si la cuenta vence en 5 días o menos o está en gracia, descartable temporalmente por sesión vía `sessionStorage` (Jean Pool)
+    - Badges dinámicos en `src/components/layout/Header.jsx`: indicadores contextuales "Vence en N días" y "En gracia" (Jean Pool)
+    - Manejo de bloqueo en `src/pages/LoginPage.jsx`: captura del error `SUBSCRIPTION_EXPIRED` con visualización persistente del motivo, fecha e instrucciones de pago bajo el formulario de inicio de sesión (Jean Pool)
+  - Suite de pruebas de integración `scripts/tests/verify-13-2.js` (`npm run test:billing`): 57 pruebas automatizadas cubriendo los 10 grupos de requisitos de negocio y seguridad (Jean Pool)
+  - Integración en runner general `scripts/tests/run-all-tests.js` (`npm run test:all`): incorporada como suite 14/14 (Jean Pool)
+
 ### Added (Fase 13 - Tarea 13.1)
 - Facturación electrónica con modelo "Trae tu Facturador" (PSE Nubefact / Simulado) (RF-23, RF-28, RF-29):
   - Migración `scripts/migrations/014_pse_config.sql`:

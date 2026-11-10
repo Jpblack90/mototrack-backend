@@ -5,6 +5,7 @@ import { AppError } from '../../shared/errors/AppError.js';
 import { validatePasswordPolicy } from '../../shared/utils/passwordPolicy.js';
 import { validateSunatRuc } from '../company/company.service.js';
 import { logAudit } from '../../shared/audit.js';
+import { getLimaDateStr, toDateStr } from '../company/subscription.service.js';
 
 const SALT_ROUNDS = 10;
 const INVALID_CREDENTIALS_MSG = 'Email o contraseña incorrectos.';
@@ -21,7 +22,7 @@ export async function login({ email, password }) {
 
   const { rows } = await pool.query(
     `SELECT u.id, u.name, u.email, u.password_hash, u.role, u.company_id, u.must_change_password,
-            c.status AS company_status, c.is_active AS company_is_active, c.trial_ends_at,
+            c.status AS company_status, c.is_active AS company_is_active, c.trial_ends_at, c.paid_until::text AS paid_until,
             c.nombre_comercial, c.razon_social
      FROM   users u
      JOIN   companies c ON c.id = u.company_id
@@ -43,6 +44,15 @@ export async function login({ email, password }) {
 
   // Verificar estado de la empresa asociada
   if (!user.company_is_active || user.company_status === 'suspended') {
+    // Si la empresa está suspendida por falta de pago (tiene fecha de vencimiento que ya expiró)
+    const paidUntilStr = toDateStr(user.paid_until);
+    const hoyStr = getLimaDateStr();
+    if (user.company_status === 'suspended' && paidUntilStr && paidUntilStr < hoyStr) {
+      const instructions = process.env.PAYMENT_INSTRUCTIONS ? process.env.PAYMENT_INSTRUCTIONS.trim() : '';
+      const msg = `Tu suscripción venció el ${paidUntilStr}. Realiza el pago para reactivar tu cuenta.${instructions ? ' ' + instructions : ''}`;
+      throw new AppError(msg, 'SUBSCRIPTION_EXPIRED', 403);
+    }
+
     throw new AppError(
       'La empresa asociada a esta cuenta se encuentra suspendida o inactiva.',
       'COMPANY_INACTIVE',

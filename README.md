@@ -56,38 +56,48 @@ Por regla de seguridad, cuando `ENABLE_TEST_HOOKS !== '1'` o `NODE_ENV === 'prod
 - Todas las trampas y utilitarios de prueba (`X-Force-Audit-Fail`, `X-Force-Void-Fail`, `FORCE_AUDIT_FAIL`, `FORCE_VOID_FAIL`) permanecen completamente desactivadas por defecto.
 - El endpoint de desarrollo para reiniciar rate limiters (`POST /api/auth/reset-rate-limit`) no se registra en las rutas de la aplicación (responde `404 Not Found`).
 
-## Activación de Talleres (Suscripción Manual)
+## Gestión de Suscripciones y Cobro Manual (Yape / Transferencia) (RF-27)
 
-Cuando un taller registrado durante el periodo de prueba (14 días gratis) adquiere una suscripción comercial activa, el administrador del sistema puede activar su cuenta de forma definitiva:
+MotoTrack AI implementa cobro manual de suscripción sin intermediarios financieros ni comisiones de pasarela. Los talleres abonan por Yape, Plin, transferencia bancaria o efectivo.
+
+### 1. Modelo de Facturación y Estados
+- **`trial`**: taller en periodo de prueba gratuita (14 días).
+- **`active`**: taller con suscripción pagada al día (`paid_until >= hoy`) o taller interno/demostración (`paid_until IS NULL`).
+- **`grace`**: suscripción vencida dentro del plazo de gracia de cortesía (`paid_until < hoy <= paid_until + BILLING_GRACE_DAYS`, por defecto 5 días). El taller conserva acceso completo para no interrumpir operaciones críticas mientras gestiona el pago.
+- **`suspended`**: periodo de gracia expirado (`paid_until + BILLING_GRACE_DAYS < hoy`). El sistema bloquea el inicio de sesión y peticiones autenticadas con código HTTP 403 `SUBSCRIPTION_EXPIRED`, retornando la fecha de vencimiento y las instrucciones de abono. No se borra información.
+
+### 2. Registro Manual de Pagos (`record-payment.js`)
+El administrador del sistema registra los pagos recibidos mediante el script CLI:
 
 ```bash
-node scripts/activate-company.js <company_id>
+node scripts/record-payment.js --company <id> --amount <S/> --method <yape|plin|transferencia|efectivo> [--ref <n.º de operación>] [--months 1] [--notes "..."]
 ```
 
-**Efectos de la activación:**
-- Modifica el estado de la empresa a `status = 'active'`.
-- Remueve la fecha de expiración (`trial_ends_at = NULL`).
-- Registra el evento de auditoría en `audit_logs` con `action = 'activate'`, `entity = 'company'`, `entity_id = <company_id>` y `user_id = NULL` (operación a nivel de sistema).
+**Reglas de negocio aplicadas en una única transacción atómica:**
+- **No pérdida de días acumulados**: la nueva fecha de vencimiento se calcula como `GREATEST(paid_until, hoy) + N meses`. Si el taller abona anticipadamente, no pierde los días restantes de su ciclo anterior.
+- Modifica el estado a `status = 'active'` y limpia `trial_ends_at = NULL`.
+- Inserta el registro en la tabla `subscription_payments` con el período cubierto (`period_from` a `period_to`), método, monto y referencia.
+- Registra el evento en `audit_logs` con `action = 'subscription_payment'`, `entity = 'company'`.
 
-## Procesos en Segundo Plano y Jobs (RF-17)
+### 3. Variables de Entorno de Facturación
+- `BILLING_GRACE_DAYS`: días de gracia tras la fecha de expiración (por defecto `5`).
+- `PAYMENT_INSTRUCTIONS`: mensaje institucional que se muestra a los administradores y en la pantalla de suspensión (por ejemplo `"Yape al 987654321 a nombre de MotoTrack AI"`).
+- `JOB_SUBSCRIPTIONS_MINUTES`: intervalo de ejecución del job de suspensión automática en minutos (por defecto `60`; `0` en serverless).
 
-El sistema incluye el job de **marcación automática de motos no recogidas**, el cual revisa órdenes terminadas cuyo plazo de espera supera el configurado por la empresa (`c.not_picked_up_days`), pasándolas a `no_recogido`, registrando la auditoría y notificando al cliente. Existen tres formas de ejecutarlo:
+## Procesos en Segundo Plano y Jobs (RF-17, RF-27)
 
-1. **Temporizador Interno (Entorno Local y Docker por defecto):**
-   - Se ejecuta al iniciar el servidor y de forma periódica cada `JOB_NOT_PICKED_UP_MINUTES` minutos (por defecto 60).
-   - Los fallos se capturan internamente con el prefijo `[JOB]` sin interrumpir el proceso del servidor.
-   - Configuración en `.env`: `JOB_NOT_PICKED_UP_MINUTES=60`.
+El sistema incluye jobs automáticos para tareas periódicas:
 
-2. **Endpoint Externo para Cloud Scheduler (Entornos Serverless como Google Cloud Run):**
-   - En Cloud Run o contenedores serverless efímeros, el temporizador interno se desactiva configurando `JOB_NOT_PICKED_UP_MINUTES=0`.
-   - Google Cloud Scheduler invoca el endpoint HTTP mediante una petición `POST /api/jobs/not-picked-up`.
-   - El endpoint no utiliza JWT sino la cabecera `X-Job-Token`, validada en tiempo constante (`crypto.timingSafeEqual`) contra la variable de entorno `JOBS_TOKEN`.
+### A. Marcación automática de motos no recogidas (RF-17)
+Revisa órdenes terminadas que superan `c.not_picked_up_days`, pasándolas a `no_recogido`.
+- CLI: `npm run job:not-picked-up`
+- HTTP: `POST /api/jobs/not-picked-up` con `X-Job-Token`
 
-3. **Script CLI Manual:**
-   - Puede ejecutarse manualmente desde la terminal mediante el script npm:
-   ```bash
-   npm run job:not-picked-up
-   ```
+### B. Suspensión automática de suscripciones vencidas (RF-27)
+Revisa empresas con `paid_until + BILLING_GRACE_DAYS < hoy` y estado activo/gracia, actualizando a `status = 'suspended'` y registrando auditoría.
+- Temporizador interno periódico cada `JOB_SUBSCRIPTIONS_MINUTES` minutos.
+- CLI: `npm run job:subscriptions`
+- HTTP: `POST /api/jobs/subscriptions` con `X-Job-Token`
 
 ## Avisos al Cliente por WhatsApp (RF-15)
 
@@ -133,11 +143,15 @@ En el directorio `docs/pse/nubefact/` se almacenan las especificaciones oficiale
 
 Para validar el correcto funcionamiento de la plataforma y el aislamiento multi-tenant:
 
+- **Pruebas de Cobro y Facturación de Suscripciones (Tarea 13.2):**
+  ```bash
+  npm run test:billing
+  ```
 - **Pruebas de Facturación Electrónica PSE Nubefact (Tarea 13.1):**
   ```bash
   npm run test:pse
   ```
-- **Ejecución Completa de Todas las Suites de Pruebas (13 suites):**
+- **Ejecución Completa de Todas las Suites de Pruebas (14 suites):**
   ```bash
   npm run test:all
   ```

@@ -44,6 +44,7 @@ const SUITES = [
   { name: 'whatsapp',     script: 'scripts/tests/verify-12-6.js' },
   { name: 'company',      script: 'scripts/tests/verify-11-2b.js' },
   { name: 'pse',          script: 'scripts/tests/verify-13-1.js' },
+  { name: 'billing',      script: 'scripts/tests/verify-13-2.js' },
 ];
 
 async function resetRateLimit() {

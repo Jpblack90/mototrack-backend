@@ -3,6 +3,7 @@ import app from './src/app.js';
 import { testConnection } from './src/config/database.js';
 import { warmUp } from './src/modules/inventory/inventory.aiClient.js';
 import { startNotPickedUpScheduler } from './src/modules/jobs/notPickedUp.scheduler.js';
+import { startSubscriptionsScheduler } from './src/modules/jobs/subscriptions.scheduler.js';
 
 const PORT = process.env.PORT ?? 4000;
 
@@ -15,6 +16,9 @@ async function bootstrap() {
 
   // Temporizador interno para verificar motos no recogidas (RF-17)
   startNotPickedUpScheduler();
+
+  // Temporizador interno para verificar suscripciones vencidas (Tarea 13.2)
+  startSubscriptionsScheduler();
 
   app.listen(PORT, () => {
     console.log(`🚀  MotoTrack AI backend corriendo en http://localhost:${PORT}`);

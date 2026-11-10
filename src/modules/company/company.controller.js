@@ -1,5 +1,6 @@
 import * as companyService from './company.service.js';
 import { getUsage } from '../plans/plan.service.js';
+import { getCompanyPayments } from './subscription.service.js';
 
 const ok = (res, data, status = 200) =>
   res.status(status).json({ success: true, data });
@@ -32,13 +33,26 @@ export async function updateCompany(req, res, next) {
 
 /**
  * GET /api/company/plan
- * Devuelve la información del plan comercial y el consumo actual de la empresa.
- * Accesible para cualquier rol autenticado de la empresa.
+ * Devuelve la información del plan comercial, consumo y estado de facturación (billing).
+ * Accesible para cualquier rol autenticado de la empresa (las instrucciones solo para admin).
  */
 export async function getCompanyPlan(req, res, next) {
   try {
-    const planUsage = await getUsage(req.user.company_id);
+    const planUsage = await getUsage(req.user.company_id, req.user?.role ?? null);
     ok(res, planUsage);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/company/payments
+ * Devuelve el historial de pagos de suscripción de la empresa (solo Administradores).
+ */
+export async function getPayments(req, res, next) {
+  try {
+    const payments = await getCompanyPayments(req.user.company_id);
+    ok(res, payments);
   } catch (err) {
     next(err);
   }

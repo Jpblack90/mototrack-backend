@@ -4,6 +4,7 @@ import { logAudit, diffObjects } from '../../shared/audit.js';
 import { encrypt, decrypt } from '../../shared/utils/crypto.js';
 import { testHooksEnabled } from '../../shared/utils/testHooks.js';
 import { nubefactProvider } from '../invoicing/pse/nubefact.js';
+import { getLimaDateStr, toDateStr, diffDays } from './subscription.service.js';
 
 /**
  * Valida un número de RUC peruano según el algoritmo oficial de SUNAT (Módulo 11).
@@ -96,7 +97,7 @@ export async function getById(companyId) {
   const result = await pool.query(
     `SELECT id, ruc, razon_social, nombre_comercial, direccion, telefono, email,
             logo_data, igv_rate, approval_threshold, not_picked_up_days, status,
-            trial_ends_at, terms_accepted_at,
+            trial_ends_at, terms_accepted_at, paid_until::text AS paid_until,
             pse_provider, pse_url, pse_token_enc,
             series_boleta, series_factura, series_nc_boleta, series_nc_factura
      FROM companies
@@ -110,9 +111,29 @@ export async function getById(companyId) {
 
   const row = result.rows[0];
   let days_left = null;
+  let billing_status = row.status;
+
   if (row.status === 'trial' && row.trial_ends_at) {
     const diffMs = new Date(row.trial_ends_at).getTime() - Date.now();
     days_left = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+    billing_status = 'trial';
+  } else if (row.paid_until && row.status !== 'suspended') {
+    const hoyStr = getLimaDateStr();
+    const paidUntilStr = toDateStr(row.paid_until);
+    const envGrace = process.env.BILLING_GRACE_DAYS;
+    const graceDays = envGrace !== undefined && envGrace !== '' ? Number(envGrace) : 5;
+    const diff = diffDays(hoyStr, paidUntilStr);
+
+    if (diff >= 0) {
+      billing_status = 'active';
+      days_left = diff;
+    } else if (Math.abs(diff) <= graceDays) {
+      billing_status = 'grace';
+      days_left = 0;
+    } else {
+      billing_status = 'suspended';
+      days_left = 0;
+    }
   }
 
   let pse_token_last4 = null;
@@ -129,6 +150,8 @@ export async function getById(companyId) {
 
   return {
     ...safeRow,
+    days_left,
+    billing_status,
     pse_provider: row.pse_provider || 'simulado',
     pse_url: row.pse_url || null,
     pse_token_set: Boolean(row.pse_token_enc),

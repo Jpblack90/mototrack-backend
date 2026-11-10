@@ -1,6 +1,7 @@
 import pool from '../../config/database.js';
 import { AppError } from '../../shared/errors/AppError.js';
 import { countMonthlySuccessfulScans } from './aiUsage.service.js';
+import { getBillingInfo } from '../company/subscription.service.js';
 
 /**
  * Calcula el rango del mes actual en la zona horaria America/Lima
@@ -34,9 +35,10 @@ export function getLimaMonthRange() {
  * NUNCA expone costos en dólares ni conteos internos de tokens.
  *
  * @param {number} companyId ID de la empresa
- * @returns {Promise<object>} Métricas de uso y límites del plan
+ * @param {string|null} [role] Rol del usuario consultante (para instrucciones de pago)
+ * @returns {Promise<object>} Métricas de uso, límites del plan y estado de facturación (billing)
  */
-export async function getUsage(companyId) {
+export async function getUsage(companyId, role = null) {
   if (!companyId) {
     throw new AppError('companyId es requerido para consultar el plan.', 'INVALID_COMPANY', 400);
   }
@@ -49,8 +51,10 @@ export async function getUsage(companyId) {
        p.max_users,
        p.max_ai_scans_month,
        p.features,
+       c.id,
        c.status,
-       c.trial_ends_at
+       c.trial_ends_at,
+       c.paid_until::text AS paid_until
      FROM companies c
      JOIN plans p ON p.id = c.plan_id
      WHERE c.id = $1`,
@@ -81,6 +85,17 @@ export async function getUsage(companyId) {
     daysLeft = diffMs > 0 ? Math.ceil(diffMs / (1000 * 60 * 60 * 24)) : 0;
   }
 
+  // 5. Calcular información de facturación (billing)
+  const billing = await getBillingInfo(
+    {
+      id: row.id,
+      status: row.status,
+      paid_until: row.paid_until,
+      trial_ends_at: row.trial_ends_at,
+    },
+    role
+  );
+
   return {
     plan: {
       name: row.name,
@@ -94,5 +109,6 @@ export async function getUsage(companyId) {
     period: { from, to },
     status: row.status,
     days_left: daysLeft,
+    billing,
   };
 }

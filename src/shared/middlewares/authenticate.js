@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import pool from '../../config/database.js';
+import { getLimaDateStr, toDateStr } from '../../modules/company/subscription.service.js';
 
 /**
  * Middleware de autenticación JWT con revocación inmediata y rol sincronizado en vivo.
@@ -41,7 +42,7 @@ export async function authenticate(req, res, next) {
   try {
     const { rows } = await pool.query(
       `SELECT u.id, u.name, u.email, u.role, u.is_active AS user_active, u.company_id, u.must_change_password,
-              c.is_active AS company_active, c.status AS company_status, c.trial_ends_at
+              c.is_active AS company_active, c.status AS company_status, c.trial_ends_at, c.paid_until::text AS paid_until
        FROM users u
        JOIN companies c ON c.id = u.company_id
        WHERE u.id = $1 AND u.company_id = $2`,
@@ -57,6 +58,20 @@ export async function authenticate(req, res, next) {
     }
 
     if (!user.company_active || user.company_status === 'suspended') {
+      const paidUntilStr = toDateStr(user.paid_until);
+      const hoyStr = getLimaDateStr();
+      if (user.company_status === 'suspended' && paidUntilStr && paidUntilStr < hoyStr) {
+        const instructions = process.env.PAYMENT_INSTRUCTIONS ? process.env.PAYMENT_INSTRUCTIONS.trim() : '';
+        const msg = `Tu suscripción venció el ${paidUntilStr}. Realiza el pago para reactivar tu cuenta.${instructions ? ' ' + instructions : ''}`;
+        return res.status(403).json({
+          success: false,
+          error: {
+            message: msg,
+            code: 'SUBSCRIPTION_EXPIRED',
+          },
+        });
+      }
+
       return res.status(401).json({
         success: false,
         error: {

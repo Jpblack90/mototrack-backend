@@ -5,6 +5,7 @@ import {
   getCompany,
   updateCompany,
   getCompanyPlan,
+  getPayments,
   testPse,
   getCompanySeries,
   updateSerie,
@@ -14,6 +15,9 @@ const router = Router();
 
 // GET /api/company/plan -> cualquier rol autenticado de la empresa
 router.get('/plan', authenticate, getCompanyPlan);
+
+// GET /api/company/payments -> solo administradores
+router.get('/payments', authenticate, authorize('admin'), getPayments);
 
 // GET /api/company/series -> cualquier rol autenticado de la empresa
 router.get('/series', authenticate, getCompanySeries);
