@@ -29,6 +29,17 @@ export async function authenticate(req, res, next) {
     });
   }
 
+  // Aislar tokens de plataforma: nunca pueden acceder a endpoints de taller
+  if (payload.scope === 'platform' || payload.platform_admin_id) {
+    return res.status(401).json({
+      success: false,
+      error: {
+        message: 'Token de plataforma no válido para endpoints de taller.',
+        code: 'TOKEN_INVALID_SCOPE',
+      },
+    });
+  }
+
   if (!payload.company_id || !payload.id) {
     return res.status(401).json({
       success: false,

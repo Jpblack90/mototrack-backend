@@ -4,6 +4,16 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Panel de Plataforma - Tarea P1)
+- Módulo backend de plataforma (super-admin) para gestión de talleres y usuarios con aislamiento estricto frente a datos de negocio:
+  - Migración `scripts/migrations/016_platform.sql`: tablas `platform_admins` (sin `company_id`, email único en minúsculas, `must_change_password` por defecto `true`) y `platform_audit_logs` inmutable mediante trigger que bloquea `UPDATE` y `DELETE` (Jean Pool)
+  - Autenticación separada en `src/shared/middlewares/authenticatePlatform.js` y `src/modules/platform/`: secreto independiente `PLATFORM_JWT_SECRET` (respuesta HTTP 503 si no está configurado sin afectar al resto del sistema), `POST /api/platform/auth/login` con JWT `scope: 'platform'` (expira en 8 h) y rate limit compartido, `POST /api/platform/auth/change-password` con `passwordPolicy.js`, bloqueo `403 PASSWORD_CHANGE_REQUIRED` mientras `must_change_password = true`, y rechazo explícito de tokens con `scope: 'platform'` en `src/shared/middlewares/authenticate.js` (Jean Pool)
+  - Script CLI `scripts/create-platform-admin.js` (`--email`, `--name`) con generación criptográfica aleatoria de contraseña temporal mostrada una sola vez (Jean Pool)
+  - Endpoints de plataforma (`GET /api/platform/metrics`, `GET /api/platform/companies`, `GET /api/platform/companies/:id`, `POST /api/platform/companies/:id/users/:userId/reset-password`, `PATCH /api/platform/companies/:id/status`, `POST /api/platform/companies/:id/payments` reutilizando `recordPayment` de `subscription.service.js`, `GET /api/platform/audit`), restringidos estrictamente a metadatos y conteos mensuales sin exponer clientes, vehículos, placas, montos de ventas ni productos (Jean Pool)
+  - Auditoría dual transaccional en mutaciones: registro simultáneo en `platform_audit_logs` y en `audit_logs` del taller con `entity = 'platform_support'` (Jean Pool)
+  - Configuración de `PLATFORM_JWT_SECRET` (sin valores reales) en `.env.example`, `Sistema/.env.example`, `docker-compose.yml`, `Sistema/deploy/docker-compose.prod.yml` y `Sistema/deploy/env.prod.example` (Jean Pool)
+  - Suite automatizada `scripts/tests/verify-p1.js` (`npm run test:platform`) integrada en `scripts/tests/run-all-tests.js` (`npm run test:all`) como suite 17/17 (Jean Pool)
+
 ### Added (Fase 14 - Tarea 14.2a)
 - Entrada de mercadería al inventario con registro de auditoría (RF-14):
   - `src/modules/inventory/inventory.routes.js`: nuevo endpoint `POST /api/inventory/:id/stock-entry` con middleware de autenticación y autorización para roles `admin`, `cajero` y `almacenero` (Jean Pool)

@@ -10,6 +10,7 @@ import companyRoutes    from '../modules/company/company.routes.js';
 import auditRoutes      from '../modules/audit/audit.routes.js';
 import jobsRoutes       from '../modules/jobs/jobs.routes.js';
 import notificationsRoutes from '../modules/notifications/notifications.routes.js';
+import platformRoutes   from '../modules/platform/platform.routes.js';
 
 const router = Router();
 
@@ -24,5 +25,6 @@ router.use('/company',       companyRoutes);
 router.use('/audit',         auditRoutes);
 router.use('/jobs',          jobsRoutes);
 router.use('/notifications', notificationsRoutes);
+router.use('/platform',      platformRoutes);
 
 export default router;
