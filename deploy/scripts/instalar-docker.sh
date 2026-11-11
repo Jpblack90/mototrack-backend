@@ -5,7 +5,13 @@ sudo apt-get update -y
 sudo apt-get install -y ca-certificates curl git
 # Script oficial de instalación de Docker (docker.com)
 curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
-sudo sh /tmp/get-docker.sh
+if ! sudo sh /tmp/get-docker.sh; then
+  # Respaldo: paquetes de Docker de los repositorios oficiales de Ubuntu
+  echo "El script de docker.com no soporta esta versión de Ubuntu; se usan los paquetes de Ubuntu."
+  sudo apt-get install -y docker.io docker-compose-v2 docker-buildx
+  sudo systemctl enable --now docker
+fi
+docker --version && docker compose version
 sudo usermod -aG docker "$USER"
 # Swap de 2 GB si no existe
 if ! swapon --show | grep -q swapfile; then
