@@ -208,6 +208,7 @@ export async function createWorkOrder(data, companyId) {
     entry_mileage,
     checklist_notes,
     whatsapp_opt_in,
+    mechanic_id,
   } = data;
 
   // Validación de campos obligatorios
@@ -224,6 +225,30 @@ export async function createWorkOrder(data, companyId) {
     throw new AppError('"entry_mileage" debe ser un número entero >= 0.', 'INVALID_FIELD', 422);
   }
 
+  // A-02: validar mechanic_id opcional (igual que assignMechanic)
+  let resolvedMechanicId = null;
+  if (mechanic_id !== undefined && mechanic_id !== null && mechanic_id !== '') {
+    const { rows: userRows } = await pool.query(
+      `SELECT id, name, role, is_active FROM users WHERE id = $1 AND company_id = $2`,
+      [mechanic_id, companyId]
+    );
+    if (!userRows[0] || !userRows[0].is_active) {
+      throw new AppError(
+        `No existe un mecánico activo con id ${mechanic_id}.`,
+        'MECHANIC_NOT_FOUND',
+        404
+      );
+    }
+    if (userRows[0].role !== 'mecanico') {
+      throw new AppError(
+        `El usuario #${mechanic_id} tiene rol '${userRows[0].role}', se requiere 'mecanico'.`,
+        'INVALID_MECHANIC',
+        422
+      );
+    }
+    resolvedMechanicId = Number(mechanic_id);
+  }
+
   const vehicle = await findOrCreateVehicle(
     {
       placa: placa.trim().toUpperCase(),
@@ -237,10 +262,10 @@ export async function createWorkOrder(data, companyId) {
   );
 
   const { rows } = await pool.query(
-    `INSERT INTO work_orders (company_id, vehicle_id, entry_mileage, checklist_notes)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO work_orders (company_id, vehicle_id, entry_mileage, checklist_notes, mechanic_id)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING *`,
-    [companyId, vehicle.id, Number(entry_mileage), checklist_notes ?? null]
+    [companyId, vehicle.id, Number(entry_mileage), checklist_notes ?? null, resolvedMechanicId]
   );
 
   const workOrder = rows[0];
@@ -416,6 +441,25 @@ export async function updateStatus(
     if (!ALLOWED_MECHANIC_TARGETS.includes(newStatus)) {
       throw new AppError(
         `Los mecánicos no pueden cambiar el estado a '${newStatus}'.`,
+        'STATUS_NOT_ALLOWED_FOR_ROLE',
+        403
+      );
+    }
+  }
+
+  // A-03: Restricciones para el rol cajero
+  if (userRole === 'cajero') {
+    const ALLOWED_CAJERO_SOURCES = ['terminado', 'no_recogido', 'pendiente_aprobacion'];
+    if (!ALLOWED_CAJERO_SOURCES.includes(current.status)) {
+      throw new AppError(
+        `El cajero solo puede cambiar el estado desde "terminado", "no_recogido" o "pendiente_aprobacion".`,
+        'STATUS_NOT_ALLOWED_FOR_ROLE',
+        403
+      );
+    }
+    if (newStatus !== 'entregado') {
+      throw new AppError(
+        `El cajero solo puede cambiar el estado a "entregado".`,
         'STATUS_NOT_ALLOWED_FOR_ROLE',
         403
       );

@@ -36,13 +36,13 @@ router.get('/:id',                 authenticate,                               g
 router.get('/:id/notifications',   authenticate, authorize('admin', 'cajero'), getOrderNotifications);
 router.post('/',                   authenticate, authorize('admin','cajero'),  createOrder);
 
-// PATCH /api/workorders/:id/assign         → asignar mecánico (admin-only)
-// PATCH /api/workorders/:id/status         → cambiar estado (admin o mecánico)
+// PATCH /api/workorders/:id/assign         → asignar mecánico (admin y cajero, A-02)
+// PATCH /api/workorders/:id/status         → cambiar estado (admin, mecánico y cajero, A-03)
 // PATCH /api/workorders/:id/approve        → UC-03 FA-1: cliente aprueba trabajo adicional
 // PATCH /api/workorders/:id/reject         → UC-03 FA-2: cliente rechaza trabajo adicional
 // PATCH /api/workorders/:id/not-picked-up  → marcar como no recogido (admin-only)
-router.patch('/:id/assign',        authenticate, authorize('admin'),                      assignMechanic);
-router.patch('/:id/status',        authenticate, authorize('admin','mecanico'),            updateStatus);
+router.patch('/:id/assign',        authenticate, authorize('admin','cajero'),              assignMechanic);
+router.patch('/:id/status',        authenticate, authorize('admin','mecanico','cajero'),   updateStatus);
 router.patch('/:id/approve',       authenticate, authorize('admin','cajero'),              approveAdditionalWork);
 router.patch('/:id/reject',        authenticate, authorize('admin','cajero'),              rejectAdditionalWork);
 router.patch('/:id/not-picked-up', authenticate, authorize('admin'),                      markNotPickedUp);

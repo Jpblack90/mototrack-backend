@@ -1,5 +1,6 @@
 import * as svc from './users.service.js';
 
+
 const ok   = (res, data, status = 200) => res.status(status).json({ success: true, data });
 const fail = (res, message, status, code) =>
   res.status(status).json({
@@ -80,6 +81,20 @@ export async function resetUserPassword(req, res, next) {
     });
   } catch (err) {
     if (err.code) return fail(res, err.message, err.statusCode || httpStatus(err.code), err.code);
+    next(err);
+  }
+}
+
+/**
+ * GET /api/users/mechanics
+ * Devuelve { id, name } de los mecánicos activos de la empresa.
+ * Accesible para admin y cajero (A-02).
+ */
+export async function getMechanics(req, res, next) {
+  try {
+    const mechanics = await svc.getMechanicsForCompany(req.user.company_id);
+    ok(res, mechanics);
+  } catch (err) {
     next(err);
   }
 }

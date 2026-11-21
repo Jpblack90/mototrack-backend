@@ -4,6 +4,18 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Fixed (Correcciones P0 de Auditoría - A-02 y A-03)
+- OT sin mecánico (A-02):
+  - `src/modules/users/users.service.js`: nueva función `getMechanicsForCompany(companyId)` que devuelve `{ id, name }` de mecánicos activos de la empresa (Jean Pool)
+  - `src/modules/users/users.controller.js`: nuevo controlador `getMechanics` (Jean Pool)
+  - `src/modules/users/users.routes.js`: nueva ruta `GET /api/users/mechanics` accesible para `admin` y `cajero` (Jean Pool)
+  - `src/modules/workorders/workorders.service.js`: `createWorkOrder` acepta `mechanic_id` opcional con la misma validación que `assignMechanic` (Jean Pool)
+  - `src/modules/workorders/workorders.routes.js`: `PATCH /:id/assign` ahora permite rol `cajero` además de `admin` (Jean Pool)
+- El cajero solo puede entregar (A-03):
+  - `src/modules/workorders/workorders.service.js`: el rol `cajero` en `updateStatus` solo puede pedir `'entregado'` y únicamente desde los estados `'terminado'`, `'no_recogido'` o `'pendiente_aprobacion'`; cualquier otra combinación lanza 403 `STATUS_NOT_ALLOWED_FOR_ROLE` (Jean Pool)
+  - `src/modules/workorders/workorders.routes.js`: `PATCH /:id/status` ahora permite rol `cajero` (Jean Pool)
+  - `scripts/tests/verify-14-1.js`: 3 nuevos casos (7, 8, 9) verificando restricciones del cajero (Jean Pool)
+
 ### Added (Panel de Plataforma - Tarea P1)
 - Módulo backend de plataforma (super-admin) para gestión de talleres y usuarios con aislamiento estricto frente a datos de negocio:
   - Migración `scripts/migrations/016_platform.sql`: tablas `platform_admins` (sin `company_id`, email único en minúsculas, `must_change_password` por defecto `true`) y `platform_audit_logs` inmutable mediante trigger que bloquea `UPDATE` y `DELETE` (Jean Pool)

@@ -290,6 +290,72 @@ async function run() {
       resDeliverAdmin
     );
 
+    // ─── CASO 7 (A-03): Cajero NO puede cambiar estado desde 'diagnostico' ───
+    console.log('\n--- Caso 7 (A-03): Cajero no puede cambiar estado desde diagnostico ---');
+    const { rows: [otDiag] } = await pool.query(
+      `INSERT INTO work_orders (company_id, vehicle_id, mechanic_id, entry_mileage, status)
+       VALUES ($1, $2, $3, 50000, 'diagnostico')
+       RETURNING id, status`,
+      [companyA.companyId, companyA.vehicleId, companyA.mechanicId]
+    );
+    createdOtIds.push(otDiag.id);
+
+    const resCajeroFromDiag = await request(`/workorders/${otDiag.id}/status`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${tokenCajeroA}` },
+      body: { status: 'entregado' },
+    });
+    assert(
+      resCajeroFromDiag.status === 403 &&
+        resCajeroFromDiag.data?.error?.code === 'STATUS_NOT_ALLOWED_FOR_ROLE',
+      'Cajero A intentando cambiar estado desde "diagnostico" → 403 STATUS_NOT_ALLOWED_FOR_ROLE',
+      resCajeroFromDiag
+    );
+
+    // ─── CASO 8 (A-03): Cajero puede entregar OT en estado 'terminado' ───
+    console.log('\n--- Caso 8 (A-03): Cajero entrega OT terminada ---');
+    const { rows: [otTerm] } = await pool.query(
+      `INSERT INTO work_orders (company_id, vehicle_id, mechanic_id, entry_mileage, status, terminado_at)
+       VALUES ($1, $2, $3, 51000, 'terminado', NOW())
+       RETURNING id, status`,
+      [companyA.companyId, companyA.vehicleId, companyA.mechanicId]
+    );
+    createdOtIds.push(otTerm.id);
+
+    const resCajeroDeliverTerm = await request(`/workorders/${otTerm.id}/status`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${tokenCajeroA}` },
+      body: { status: 'entregado' },
+    });
+    assert(
+      resCajeroDeliverTerm.status === 200 &&
+        resCajeroDeliverTerm.data?.data?.status === 'entregado',
+      'Cajero A entrega OT en "terminado" → 200 entregado',
+      resCajeroDeliverTerm
+    );
+
+    // ─── CASO 9 (A-03): Cajero NO puede pedir estado distinto de 'entregado' desde 'terminado' ───
+    console.log('\n--- Caso 9 (A-03): Cajero no puede pedir no_recogido ---');
+    const { rows: [otTerm2] } = await pool.query(
+      `INSERT INTO work_orders (company_id, vehicle_id, mechanic_id, entry_mileage, status, terminado_at)
+       VALUES ($1, $2, $3, 52000, 'terminado', NOW())
+       RETURNING id, status`,
+      [companyA.companyId, companyA.vehicleId, companyA.mechanicId]
+    );
+    createdOtIds.push(otTerm2.id);
+
+    const resCajeroNoRecogido = await request(`/workorders/${otTerm2.id}/status`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${tokenCajeroA}` },
+      body: { status: 'no_recogido' },
+    });
+    assert(
+      resCajeroNoRecogido.status === 403 &&
+        resCajeroNoRecogido.data?.error?.code === 'STATUS_NOT_ALLOWED_FOR_ROLE',
+      'Cajero A pidiendo "no_recogido" desde "terminado" → 403 STATUS_NOT_ALLOWED_FOR_ROLE',
+      resCajeroNoRecogido
+    );
+
   } catch (err) {
     console.error('❌  Error inesperado durante verify-14-1:', err);
     failedTests++;

@@ -322,6 +322,24 @@ export async function remove(id, companyId, currentUserId) {
  * @param {number} companyId
  * @param {number|string|null} [currentUserId]
  */
+/**
+ * Retorna la lista de mecánicos activos de la empresa (id y nombre únicamente).
+ * Para uso en el selector de asignación de OT por admin y cajero.
+ *
+ * @param {number} companyId
+ * @returns {Promise<Array<{ id: number, name: string }>>}
+ */
+export async function getMechanicsForCompany(companyId) {
+  const { rows } = await pool.query(
+    `SELECT id, name
+     FROM   users
+     WHERE  company_id = $1 AND role = 'mecanico' AND is_active = true
+     ORDER  BY name ASC`,
+    [companyId]
+  );
+  return rows;
+}
+
 export async function resetPassword(id, { new_password }, companyId, currentUserId = null) {
   if (!new_password) {
     throw new AppError('El campo "new_password" es obligatorio.', 'MISSING_FIELD', 422);

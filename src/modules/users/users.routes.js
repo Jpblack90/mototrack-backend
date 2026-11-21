@@ -8,11 +8,16 @@ import {
   updateUser,
   removeUser,
   resetUserPassword,
+  getMechanics,
 } from './users.controller.js';
 
 const router = Router();
 
-// Todas las rutas son admin-only para la empresa del token
+// GET /api/users/mechanics — mecánicos activos de la empresa (admin y cajero, A-02)
+// DEBE ir antes de /:id para evitar que Express interprete "mechanics" como un id
+router.get('/mechanics',           authenticate, authorize('admin','cajero'),  getMechanics);
+
+// Resto de rutas admin-only
 router.get('/',                    authenticate, authorize('admin'), getAllUsers);
 router.get('/:id',                 authenticate, authorize('admin'), getUser);
 router.post('/',                   authenticate, authorize('admin'), createUser);
