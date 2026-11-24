@@ -10,6 +10,7 @@
     "migrate": "node scripts/migrate.js",
     "seed:admin": "node scripts/seed-admin.js",
     "seed:demo": "node scripts/seed-demo-users.js",
+    "seed:demo-company": "node scripts/seed-demo-company.js",
     "seed:test-company": "node scripts/tests/seed-test-company.js",
     "test:isolation": "node scripts/tests/test-isolation.js",
     "test:company": "node scripts/tests/verify-11-2b.js",
