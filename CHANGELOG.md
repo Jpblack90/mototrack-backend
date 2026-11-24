@@ -4,6 +4,12 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Tendencia de Ventas en Dashboard)
+- Nuevo endpoint `GET /api/dashboard/sales-trend?days=30`:
+  - `src/modules/dashboard/dashboard.service.js`: nueva función `getSalesTrend(days, companyId)` que agrupa ventas en estado `'completed'` por día UTC mediante `generate_series`, rellenando días sin ventas con `total = 0` y `transactions = 0` para una línea continua (Jean Pool)
+  - `src/modules/dashboard/dashboard.controller.js`: nuevo controlador `getSalesTrend` con validación estricta de `days` (entero entre 1 y 90, 400 ante valores inválidos) (Jean Pool)
+  - `src/modules/dashboard/dashboard.routes.js`: ruta registrada bajo guard `admin` con aislamiento multi-tenant por `company_id` (Jean Pool)
+
 ### Fixed (Correcciones P0 de Auditoría - A-02 y A-03)
 - OT sin mecánico (A-02):
   - `src/modules/users/users.service.js`: nueva función `getMechanicsForCompany(companyId)` que devuelve `{ id, name }` de mecánicos activos de la empresa (Jean Pool)

@@ -31,6 +31,31 @@ export async function getSalesSummary(req, res, next) {
 }
 
 /**
+ * GET /api/dashboard/sales-trend
+ * Query params opcionales: ?days=30
+ */
+export async function getSalesTrend(req, res, next) {
+  try {
+    let days = 30;
+    if (req.query.days !== undefined) {
+      const raw = String(req.query.days).trim();
+      if (!/^\d+$/.test(raw)) {
+        return fail(res, 'El parámetro days debe ser un número entero entre 1 y 90.', 400);
+      }
+      const parsed = parseInt(raw, 10);
+      if (parsed < 1 || parsed > 90) {
+        return fail(res, 'El parámetro days debe ser un número entero entre 1 y 90.', 400);
+      }
+      days = parsed;
+    }
+    const data = await svc.getSalesTrend(days, req.user.company_id);
+    ok(res, data);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * GET /api/dashboard/inventory
  */
 export async function getInventorySummary(req, res, next) {

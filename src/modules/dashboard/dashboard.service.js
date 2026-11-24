@@ -107,6 +107,54 @@ export async function getSalesSummary({ from, to } = {}, companyId) {
 }
 
 /**
+ * Serie temporal de ventas para los últimos N días terminando hoy (UTC).
+ * Incluye días sin ventas con total = 0 y transactions = 0.
+ *
+ * @param {number} days Número de días (1..90), por defecto 30
+ * @param {number} companyId ID de la empresa
+ */
+export async function getSalesTrend(days = 30, companyId) {
+  const { rows } = await pool.query(
+    `WITH date_series AS (
+       SELECT d::date AS date
+       FROM generate_series(
+         ((CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date - ($1 - 1) * INTERVAL '1 day')::date,
+         (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date,
+         INTERVAL '1 day'
+       ) AS d
+     )
+     SELECT
+       ds.date::text AS date,
+       COALESCE(SUM(s.total), 0) AS total,
+       COUNT(s.id)::integer AS transactions
+     FROM date_series ds
+     LEFT JOIN sales s ON
+       s.company_id = $2
+       AND s.status = 'completed'
+       AND (s.created_at AT TIME ZONE 'UTC')::date = ds.date
+     GROUP BY ds.date
+     ORDER BY ds.date ASC`,
+    [days, companyId]
+  );
+
+  const series = rows.map((r) => ({
+    date: r.date,
+    total: Math.round((Number(r.total) + Number.EPSILON) * 100) / 100,
+    transactions: Number(r.transactions),
+  }));
+
+  const from = series.length > 0 ? series[0].date : null;
+  const to = series.length > 0 ? series[series.length - 1].date : null;
+
+  return {
+    days,
+    from,
+    to,
+    series,
+  };
+}
+
+/**
  * Resumen del inventario de la empresa: productos activos, stock bajo y valor total.
  * @param {number} companyId
  */
