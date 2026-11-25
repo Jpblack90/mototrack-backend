@@ -306,10 +306,12 @@ export async function getAll({ status, mechanicId } = {}, companyId) {
 
   const query = `
     SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone,
-           u.name AS mechanic_name
+           u.name AS mechanic_name,
+           s.id AS sale_id, (s.id IS NOT NULL) AS is_billed
     FROM   work_orders wo
     JOIN   vehicles    v  ON v.id  = wo.vehicle_id
     LEFT JOIN users    u  ON u.id  = wo.mechanic_id
+    LEFT JOIN sales    s  ON s.work_order_id = wo.id AND s.company_id = wo.company_id AND s.status = 'completed'
     WHERE  ${conditions.join(' AND ')}
     ORDER  BY wo.id ASC
   `;
@@ -327,10 +329,12 @@ export async function getAll({ status, mechanicId } = {}, companyId) {
 export async function getById(id, companyId) {
   const { rows } = await pool.query(
     `SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone,
-            u.name AS mechanic_name
+            u.name AS mechanic_name,
+            s.id AS sale_id, (s.id IS NOT NULL) AS is_billed
      FROM   work_orders wo
      JOIN   vehicles    v  ON v.id = wo.vehicle_id
      LEFT JOIN users    u  ON u.id = wo.mechanic_id
+     LEFT JOIN sales    s  ON s.work_order_id = wo.id AND s.company_id = wo.company_id AND s.status = 'completed'
      WHERE  wo.id = $1 AND wo.company_id = $2`,
     [id, companyId]
   );
@@ -346,10 +350,12 @@ export async function getById(id, companyId) {
 export async function getHistoryByPlaca(placa, companyId) {
   const { rows } = await pool.query(
     `SELECT wo.*, v.placa, v.brand, v.model, v.customer_name, v.customer_phone,
-            u.name AS mechanic_name
+            u.name AS mechanic_name,
+            s.id AS sale_id, (s.id IS NOT NULL) AS is_billed
      FROM   work_orders wo
      JOIN   vehicles    v  ON v.id = wo.vehicle_id
      LEFT JOIN users    u  ON u.id = wo.mechanic_id
+     LEFT JOIN sales    s  ON s.work_order_id = wo.id AND s.company_id = wo.company_id AND s.status = 'completed'
      WHERE  v.placa = $1 AND v.company_id = $2 AND wo.company_id = $2
      ORDER  BY wo.created_at DESC`,
     [placa.trim().toUpperCase(), companyId]
@@ -412,19 +418,15 @@ export async function assignMechanic(id, mechanic_id, companyId) {
  * @param {number}        companyId
  * @param {{ userRole?: string, userId?: number }} [actor]
  */
-export async function updateStatus(
-  id,
-  newStatus,
-  { diagnosis_notes, additional_cost } = {},
-  companyId,
-  { userRole, userId } = {}
-) {
-  // a) Verificar que la OT existe en la empresa
-  const current = await getById(id, companyId);
-  if (!current) {
-    throw new AppError(`Orden de trabajo #${id} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
-  }
-
+/**
+ * Valida reglas de transición por rol y VALID_TRANSITIONS para una OT dada.
+ * Reutilizable tanto en PATCH /workorders/:id/status como en cobro POS (POST /sales).
+ *
+ * @param {object} current
+ * @param {string} newStatus
+ * @param {{ userRole?: string, userId?: number }} [actor]
+ */
+export function assertCanTransitionWorkOrder(current, newStatus, { userRole, userId } = {}) {
   // Restricciones para el rol mecanico (Tarea 14.1 / 14.1b)
   if (userRole === 'mecanico') {
     if (!current.mechanic_id || Number(current.mechanic_id) !== Number(userId)) {
@@ -478,6 +480,49 @@ export async function updateStatus(
       422
     );
   }
+}
+
+/**
+ * Marca una OT (ya bloqueada con FOR UPDATE) como 'entregado' dentro de una transacción abierta.
+ * Replica la validación de roles y transiciones de updateStatus más el UPDATE de entrega.
+ *
+ * @param {import('pg').PoolClient} client
+ * @param {object} currentOrder
+ * @param {number} companyId
+ * @param {{ userRole?: string, userId?: number }|null} [actor]
+ * @returns {Promise<object>}
+ */
+export async function deliverWorkOrderInTx(client, currentOrder, companyId, actor = null) {
+  assertCanTransitionWorkOrder(currentOrder, 'entregado', actor ?? {});
+
+  const { rows } = await client.query(
+    `UPDATE work_orders
+     SET status     = 'entregado',
+         updated_at = NOW()
+     WHERE id = $1 AND company_id = $2
+     RETURNING *`,
+    [currentOrder.id, companyId]
+  );
+
+  return rows[0];
+}
+
+export async function updateStatus(
+  id,
+  newStatus,
+  { diagnosis_notes, additional_cost } = {},
+  companyId,
+  { userRole, userId } = {}
+) {
+  // a) Verificar que la OT existe en la empresa
+  const current = await getById(id, companyId);
+  if (!current) {
+    throw new AppError(`Orden de trabajo #${id} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
+  }
+
+  assertCanTransitionWorkOrder(current, newStatus, { userRole, userId });
+
+  const currentStatus = current.status;
 
   // c) Regla RF-16: desviar a pendiente_aprobacion si el costo supera el umbral configurado de la empresa
   let resolvedStatus = newStatus;

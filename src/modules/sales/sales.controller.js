@@ -24,8 +24,13 @@ function httpStatus(errOrCode) {
     SALE_NOT_FOUND:            404,
     PRODUCT_NOT_FOUND:         404,
     KIT_NOT_FOUND:             404,
+    WORK_ORDER_NOT_FOUND:      404,
     INVOICE_NOT_ACCEPTED:      409,
     ALREADY_VOIDED:            409,
+    WORK_ORDER_ALREADY_BILLED: 409,
+    WORK_ORDER_NOT_ASSIGNED:   403,
+    STATUS_NOT_ALLOWED_FOR_ROLE: 403,
+    APPROVAL_REQUIRED:         403,
     INSUFFICIENT_STOCK:        422,
     INVALID_TRANSITION:        422,
     MISSING_FIELD:             422,
@@ -97,10 +102,11 @@ export async function getSale(req, res, next) {
  */
 export async function createSale(req, res, next) {
   try {
-    const sale = await svc.createSale(req.body, req.user.company_id);
+    const actor = req.user ? { userRole: req.user.role, userId: req.user.id } : null;
+    const sale = await svc.createSale(req.body, req.user.company_id, actor);
     ok(res, sale, 201);
   } catch (err) {
-    if (err.code) return fail(res, err.message, httpStatus(err.code), err.code);
+    if (err.code) return fail(res, err.message, httpStatus(err), err.code);
     next(err);
   }
 }

@@ -48,6 +48,7 @@ const SUITES = [
   { name: 'mechanic',     script: 'scripts/tests/verify-14-1.js' },
   { name: 'stock-entry',  script: 'scripts/tests/verify-14-2.js' },
   { name: 'platform',     script: 'scripts/tests/verify-p1.js' },
+  { name: 'cobro-ot',     script: 'scripts/tests/verify-cobro-ot.js' },
 ];
 
 async function resetRateLimit() {

@@ -52,7 +52,7 @@ export function buildSimplifiedXml(sale, invoiceData, companyInfo = {}) {
     .map(
       (item) => `
     <item>
-      <description>${escapeXml(item.product_name ?? item.kit_name ?? 'Ítem')}</description>
+      <description>${escapeXml(item.product_name ?? item.kit_name ?? item.description ?? 'Ítem')}</description>
       <quantity>${item.quantity}</quantity>
       <unitPrice>${item.unit_price}</unitPrice>
       <subtotal>${item.subtotal}</subtotal>
@@ -174,9 +174,11 @@ export function buildPseDocument({
     const totalIgv = +(subtotal - (subtotal / (1 + igvRate))).toFixed(2);
     const totalGravada = +(subtotal / (1 + igvRate)).toFixed(2);
 
+    const isService = it.item_type === 'service';
+
     return {
-      unidad_de_medida: 'NIU',
-      codigo: it.product_id ? `PROD-${it.product_id}` : (it.kit_id ? `KIT-${it.kit_id}` : 'ITEM'),
+      unidad_de_medida: isService ? 'ZZ' : 'NIU',
+      codigo: it.product_id ? `PROD-${it.product_id}` : (it.kit_id ? `KIT-${it.kit_id}` : (isService ? 'SERV' : 'ITEM')),
       descripcion: it.product_name ?? it.kit_name ?? it.description ?? 'Ítem',
       cantidad: qty,
       valor_unitario: valorUnitario,
@@ -331,13 +333,15 @@ export async function createInvoice({
     // Traer ítems de la venta expandidos para el XML y PSE
     const { rows: saleItems } = await client.query(
       `SELECT
+         si.item_type, si.description, si.product_id, si.kit_id,
          si.quantity, si.unit_price, si.subtotal,
          p.name AS product_name,
          k.name AS kit_name
        FROM   sale_items si
        LEFT JOIN products p ON p.id = si.product_id
        LEFT JOIN kits     k ON k.id = si.kit_id
-       WHERE  si.sale_id = $1`,
+       WHERE  si.sale_id = $1
+       ORDER  BY si.id ASC`,
       [sale_id]
     );
     sale.items = saleItems;
@@ -503,12 +507,14 @@ export async function retryContingency(id, companyId, userId = null) {
     const sale = saleRows[0] || {};
 
     const { rows: saleItems } = await client.query(
-      `SELECT si.quantity, si.unit_price, si.subtotal,
+      `SELECT si.item_type, si.description, si.product_id, si.kit_id,
+              si.quantity, si.unit_price, si.subtotal,
               p.name AS product_name, k.name AS kit_name
        FROM sale_items si
        LEFT JOIN products p ON p.id = si.product_id
        LEFT JOIN kits k ON k.id = si.kit_id
-       WHERE si.sale_id = $1`,
+       WHERE si.sale_id = $1
+       ORDER BY si.id ASC`,
       [invoice.sale_id]
     );
     sale.items = saleItems;
@@ -735,8 +741,8 @@ export async function getTicketData(id, companyId) {
   // Traer ítems de la venta
   const { rows: items } = await pool.query(
     `SELECT
-       si.quantity, si.unit_price, si.subtotal,
-       COALESCE(p.name, k.name) AS description
+       si.item_type, si.quantity, si.unit_price, si.subtotal,
+       COALESCE(p.name, k.name, si.description) AS description
      FROM   sale_items si
      LEFT JOIN products p ON p.id = si.product_id
      LEFT JOIN kits     k ON k.id = si.kit_id
@@ -841,8 +847,8 @@ export async function getCreditNoteTicketData(id, companyId) {
 
   const { rows: items } = await pool.query(
     `SELECT
-       si.quantity, si.unit_price, si.subtotal,
-       COALESCE(p.name, k.name) AS description
+       si.item_type, si.quantity, si.unit_price, si.subtotal,
+       COALESCE(p.name, k.name, si.description) AS description
      FROM   sale_items si
      LEFT JOIN products p ON p.id = si.product_id
      LEFT JOIN kits     k ON k.id = si.kit_id
@@ -954,12 +960,14 @@ export async function retryCreditNoteContingency(id, companyId, userId = null) {
     const sale = saleRows[0] || {};
 
     const { rows: saleItems } = await client.query(
-      `SELECT si.quantity, si.unit_price, si.subtotal,
+      `SELECT si.item_type, si.description, si.product_id, si.kit_id,
+              si.quantity, si.unit_price, si.subtotal,
               p.name AS product_name, k.name AS kit_name
        FROM sale_items si
        LEFT JOIN products p ON p.id = si.product_id
        LEFT JOIN kits k ON k.id = si.kit_id
-       WHERE si.sale_id = $1`,
+       WHERE si.sale_id = $1
+       ORDER BY si.id ASC`,
       [cn.sale_id]
     );
     sale.items = saleItems;

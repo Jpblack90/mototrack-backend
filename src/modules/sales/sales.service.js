@@ -5,6 +5,7 @@ import { buildCreditNoteXml, buildPseDocument } from '../invoicing/invoicing.ser
 import { getPseProvider } from '../invoicing/pse/index.js';
 import { sendComprobante } from '../invoicing/invoicing.pseClient.js';
 import { testHooksEnabled } from '../../shared/utils/testHooks.js';
+import { deliverWorkOrderInTx } from '../workorders/workorders.service.js';
 
 // ─── Errores controlados ──────────────────────────────────────────────────────
 
@@ -127,8 +128,9 @@ export async function getAllKits(companyId) {
  *
  * @param {{ customer_name, work_order_id, payment_method, payments, items: Array }} data
  * @param {number} companyId
+ * @param {{ userRole?: string, userId?: number }|null} [actor=null]
  */
-export async function createSale({ customer_name, work_order_id, payment_method, payments, items }, companyId) {
+export async function createSale({ customer_name, work_order_id, payment_method, payments, items }, companyId, actor = null) {
   const validMethods = ['efectivo', 'tarjeta', 'yape', 'plin'];
 
   // Validar método(s) de pago antes de abrir la transacción
@@ -187,24 +189,57 @@ export async function createSale({ customer_name, work_order_id, payment_method,
 
   // Validar estructura de cada ítem antes de abrir la transacción
   for (const item of items) {
+    if (!item || typeof item !== 'object') {
+      throw new AppError('Cada ítem debe ser un objeto válido.', 'INVALID_ITEM', 422);
+    }
+    const isService = item.type === 'service';
     const hasProduct = item.product_id != null;
     const hasKit = item.kit_id != null;
-    if (hasProduct && hasKit) {
-      throw new AppError(
-        'Cada ítem debe tener "product_id" O "kit_id", nunca ambos.',
-        'INVALID_ITEM',
-        422
-      );
+
+    if (isService) {
+      if (hasProduct || hasKit) {
+        throw new AppError(
+          'Un ítem de servicio no puede incluir "product_id" ni "kit_id".',
+          'INVALID_ITEM',
+          422
+        );
+      }
+      const desc = typeof item.description === 'string' ? item.description.trim() : '';
+      if (desc.length < 1 || desc.length > 200) {
+        throw new AppError(
+          'La descripción del servicio debe tener entre 1 y 200 caracteres.',
+          'INVALID_ITEM',
+          422
+        );
+      }
+      const unitPrice = Number(item.unit_price);
+      if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+        throw new AppError(
+          'El precio unitario del servicio ("unit_price") debe ser mayor a 0.',
+          'INVALID_ITEM',
+          422
+        );
+      }
+    } else {
+      if (hasProduct && hasKit) {
+        throw new AppError(
+          'Cada ítem debe tener "product_id" O "kit_id", nunca ambos.',
+          'INVALID_ITEM',
+          422
+        );
+      }
+      if (!hasProduct && !hasKit) {
+        throw new AppError(
+          'Cada ítem debe tener "product_id", "kit_id" o type "service".',
+          'INVALID_ITEM',
+          422
+        );
+      }
     }
-    if (!hasProduct && !hasKit) {
-      throw new AppError(
-        'Cada ítem debe tener "product_id" o "kit_id".',
-        'INVALID_ITEM',
-        422
-      );
-    }
-    if (!item.quantity || Number(item.quantity) < 1) {
-      throw new AppError('"quantity" debe ser >= 1 en cada ítem.', 'INVALID_FIELD', 422);
+
+    const qty = Number(item.quantity);
+    if (!Number.isInteger(qty) || qty < 1) {
+      throw new AppError('"quantity" debe ser un entero >= 1 en cada ítem.', 'INVALID_FIELD', 422);
     }
   }
 
@@ -220,9 +255,13 @@ export async function createSale({ customer_name, work_order_id, payment_method,
     const companyIgvRate = compRows[0] && compRows[0].igv_rate != null ? Number(compRows[0].igv_rate) : 0.18;
 
     // Validar orden de trabajo si fue especificada
-    if (work_order_id) {
+    let lockedWorkOrder = null;
+    if (work_order_id != null && work_order_id !== '') {
       const { rows: woRows } = await client.query(
-        `SELECT id FROM work_orders WHERE id = $1 AND company_id = $2`,
+        `SELECT id, company_id, status, mechanic_id, vehicle_id, additional_cost
+         FROM work_orders
+         WHERE id = $1 AND company_id = $2
+         FOR UPDATE`,
         [work_order_id, companyId]
       );
       if (!woRows[0]) {
@@ -230,6 +269,35 @@ export async function createSale({ customer_name, work_order_id, payment_method,
           `Orden de trabajo #${work_order_id} no encontrada.`,
           'WORK_ORDER_NOT_FOUND',
           404
+        );
+      }
+      lockedWorkOrder = woRows[0];
+
+      // Verificar si la OT ya tiene una venta completada (antes de validar transición a entregado → 409)
+      const { rows: billedRows } = await client.query(
+        `SELECT id
+         FROM sales
+         WHERE work_order_id = $1 AND company_id = $2 AND status = 'completed'
+         LIMIT 1`,
+        [lockedWorkOrder.id, companyId]
+      );
+      if (billedRows[0]) {
+        throw new AppError(
+          `La orden de trabajo #${lockedWorkOrder.id} ya cuenta con una venta completada (#${billedRows[0].id}).`,
+          'WORK_ORDER_ALREADY_BILLED',
+          409
+        );
+      }
+
+      // Via HTTP (actor presente), solo OT en 'terminado' o 'no_recogido'; scripts internos sin actor permiten 'entregado' heredado
+      const allowedWoStatuses = actor
+        ? ['terminado', 'no_recogido']
+        : ['terminado', 'no_recogido', 'entregado'];
+      if (!allowedWoStatuses.includes(lockedWorkOrder.status)) {
+        throw new AppError(
+          `La orden de trabajo #${lockedWorkOrder.id} está en estado '${lockedWorkOrder.status}' y no puede cobrarse. Solo se cobran OT en estado 'terminado' o 'no_recogido'.`,
+          'INVALID_TRANSITION',
+          422
         );
       }
     }
@@ -243,7 +311,7 @@ export async function createSale({ customer_name, work_order_id, payment_method,
     const { rows: saleRows } = await client.query(
       `INSERT INTO sales (company_id, customer_name, work_order_id, payment_method, subtotal, igv, total, igv_rate)
        VALUES ($1, $2, $3, $4, 0, 0, 0, $5) RETURNING id`,
-      [companyId, customer_name ?? null, work_order_id ?? null, initialPaymentMethod, companyIgvRate]
+      [companyId, customer_name ?? null, lockedWorkOrder?.id ?? null, initialPaymentMethod, companyIgvRate]
     );
     const saleId = saleRows[0].id;
 
@@ -256,7 +324,21 @@ export async function createSale({ customer_name, work_order_id, payment_method,
     for (const item of items) {
       const qty = Number(item.quantity);
 
-      if (item.product_id != null) {
+      if (item.type === 'service') {
+        // ── Servicio / Mano de obra (no descuenta stock) ──────────────────────
+        const desc = item.description.trim();
+        const unitPrice = +Number(item.unit_price).toFixed(2);
+        const lineSubtotal = +(unitPrice * qty).toFixed(2);
+
+        await client.query(
+          `INSERT INTO sale_items (sale_id, item_type, description, quantity, unit_price, subtotal)
+           VALUES ($1, 'service', $2, $3, $4, $5)`,
+          [saleId, desc, qty, unitPrice, lineSubtotal]
+        );
+
+        subtotalTotal += lineSubtotal;
+
+      } else if (item.product_id != null) {
         // ── Producto directo ──────────────────────────────────────────────────
         const { rows: prodRows } = await client.query(
           `SELECT id, name, sale_price FROM products WHERE id = $1 AND company_id = $2 AND is_active = true`,
@@ -289,8 +371,8 @@ export async function createSale({ customer_name, work_order_id, payment_method,
         const lineSubtotal = +(unitPrice * qty).toFixed(2);
 
         await client.query(
-          `INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, subtotal)
-           VALUES ($1, $2, $3, $4, $5)`,
+          `INSERT INTO sale_items (sale_id, item_type, product_id, quantity, unit_price, subtotal)
+           VALUES ($1, 'product', $2, $3, $4, $5)`,
           [saleId, product.id, qty, unitPrice, lineSubtotal]
         );
 
@@ -346,8 +428,8 @@ export async function createSale({ customer_name, work_order_id, payment_method,
         const lineSubtotal = +(unitPrice * qty).toFixed(2);
 
         await client.query(
-          `INSERT INTO sale_items (sale_id, kit_id, quantity, unit_price, subtotal)
-           VALUES ($1, $2, $3, $4, $5)`,
+          `INSERT INTO sale_items (sale_id, item_type, kit_id, quantity, unit_price, subtotal)
+           VALUES ($1, 'kit', $2, $3, $4, $5)`,
           [saleId, kit.id, qty, unitPrice, lineSubtotal]
         );
 
@@ -444,11 +526,28 @@ export async function createSale({ customer_name, work_order_id, payment_method,
       insertedPayments.push(payRows[0]);
     }
 
+    let deliveredWorkOrder = null;
+    if (lockedWorkOrder && lockedWorkOrder.status !== 'entregado') {
+      deliveredWorkOrder = await deliverWorkOrderInTx(client, lockedWorkOrder, companyId, actor);
+    }
+
     await client.query('COMMIT');
-    return { ...updatedSale[0], payments: insertedPayments, stock_alerts: stockAlerts };
+    return {
+      ...updatedSale[0],
+      payments: insertedPayments,
+      stock_alerts: stockAlerts,
+      ...(deliveredWorkOrder ? { work_order_status: deliveredWorkOrder.status } : {}),
+    };
 
   } catch (err) {
     await client.query('ROLLBACK');
+    if (err?.code === '23505' && err?.constraint === 'uq_sales_work_order_completed') {
+      throw new AppError(
+        `La orden de trabajo #${work_order_id} ya cuenta con una venta completada.`,
+        'WORK_ORDER_ALREADY_BILLED',
+        409
+      );
+    }
     throw err; // el controller lo captura y responde
   } finally {
     client.release();
@@ -493,7 +592,7 @@ export async function getById(id, companyId) {
 
   const { rows: saleItems } = await pool.query(
     `SELECT
-       si.id, si.quantity, si.unit_price, si.subtotal,
+       si.id, si.item_type, si.description, si.quantity, si.unit_price, si.subtotal,
        si.product_id, p.name AS product_name, p.sku,
        si.kit_id,   k.name AS kit_name
      FROM   sale_items si
@@ -618,15 +717,17 @@ export async function voidSale(id, options, companyId, userId = null) {
         );
         const ncNumero = seriesRows[0].last_number;
 
-        // Items de la venta para XML
+        // Items de la venta para XML y PSE
         const { rows: itemsDb } = await client.query(
-          `SELECT si.quantity, si.unit_price, si.subtotal,
+          `SELECT si.item_type, si.description, si.product_id, si.kit_id,
+                  si.quantity, si.unit_price, si.subtotal,
                   p.name AS product_name,
                   k.name AS kit_name
            FROM   sale_items si
            LEFT JOIN products p ON p.id = si.product_id
            LEFT JOIN kits     k ON k.id = si.kit_id
-           WHERE  si.sale_id = $1`,
+           WHERE  si.sale_id = $1
+           ORDER  BY si.id ASC`,
           [id]
         );
         saleItemsFull = itemsDb;
@@ -669,14 +770,15 @@ export async function voidSale(id, options, companyId, userId = null) {
       // Si invoice.estado === 'rejected', anula como venta sin comprobante (createdNc queda en null)
     }
 
-    // 3. Restaurar stock
+    // 3. Restaurar stock (los ítems de servicio no mueven inventario)
     const { rows: saleItems } = await client.query(
-      `SELECT si.product_id, si.kit_id, si.quantity FROM sale_items AS si WHERE si.sale_id = $1`,
+      `SELECT si.item_type, si.product_id, si.kit_id, si.quantity FROM sale_items AS si WHERE si.sale_id = $1`,
       [id]
     );
 
     const restoredStock = [];
     for (const item of saleItems) {
+      if (item.item_type === 'service') continue;
       if (item.product_id != null) {
         await restoreStock(client, item.product_id, item.quantity, companyId);
         restoredStock.push({ product_id: item.product_id, quantity: item.quantity });

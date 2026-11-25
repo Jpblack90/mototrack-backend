@@ -4,6 +4,21 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (Cobro Unificado de OT - Alcance A)
+- Migración idempotente `scripts/migrations/017_sale_items_servicios.sql`:
+  - `sale_items`: nuevas columnas `item_type` (`'product'|'kit'|'service'`, backfill automático) y `description` (`TEXT NULL`), junto al constraint `chk_sale_item_type_consistency` en reemplazo de `chk_sale_item_product_xor_kit`.
+  - `sales`: índice único parcial `uq_sales_work_order_completed` en `(work_order_id) WHERE work_order_id IS NOT NULL AND status = 'completed'`.
+- `src/modules/workorders/workorders.service.js`:
+  - `getAll`, `getById` y `getHistoryByPlaca` agregan `sale_id` e `is_billed` haciendo `LEFT JOIN sales` en estado `'completed'`.
+  - Nuevos helpers exportados `assertCanTransitionWorkOrder` y `deliverWorkOrderInTx(client, currentOrder, companyId, actor)` reutilizados por `updateStatus` y `createSale`.
+- `src/modules/sales/sales.service.js` y `sales.controller.js`:
+  - `createSale` acepta ítems `{ type: 'service', description, unit_price, quantity }` (base sin IGV, descripción 1–200 chars, precio > 0, cantidad entera >= 1) sin descontar stock.
+  - `createSale` recibe `actor` opcional desde el controller (`req.user`), bloquea la OT con `SELECT ... FOR UPDATE`, responde `409 WORK_ORDER_ALREADY_BILLED` ante doble cobro, restringe OT a `'terminado'` / `'no_recogido'` vía HTTP y transiciona la OT a `'entregado'` en la misma transacción.
+  - `getById` expone `item_type` y `description`; `voidSale` omite `restoreStock` para servicios, no revierte la OT entregada y pasa `item_type`/`description`/`product_id`/`kit_id` a la Nota de Crédito.
+- `src/modules/invoicing/invoicing.service.js`:
+  - `buildSimplifiedXml`, `createInvoice`, `retryContingency`, `getTicketData`, `getCreditNoteTicketData` y `retryCreditNoteContingency` expanden `item_type` y `description`; `buildPseDocument` envía `unidad_de_medida: 'ZZ'` y `codigo: 'SERV'` para servicios.
+- Suite de verificación `scripts/tests/verify-cobro-ot.js` registrada en `package.json` (`test:cobro-ot`) y `scripts/tests/run-all-tests.js`.
+
 ### Added (Tendencia de Ventas en Dashboard)
 - Nuevo endpoint `GET /api/dashboard/sales-trend?days=30`:
   - `src/modules/dashboard/dashboard.service.js`: nueva función `getSalesTrend(days, companyId)` que agrupa ventas en estado `'completed'` por día UTC mediante `generate_series`, rellenando días sin ventas con `total = 0` y `transactions = 0` para una línea continua (Jean Pool)
