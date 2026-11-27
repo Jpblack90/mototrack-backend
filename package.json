@@ -30,6 +30,7 @@
     "test:stock-entry": "node scripts/tests/verify-14-2.js",
     "test:platform": "node scripts/tests/verify-p1.js",
     "test:cobro-ot": "node scripts/tests/verify-cobro-ot.js",
+    "test:ot-items": "node scripts/tests/verify-ot-items.js",
     "job:not-picked-up": "node scripts/jobs/run-not-picked-up.js",
     "job:subscriptions": "node scripts/jobs/run-subscriptions.js",
     "test:all": "node scripts/tests/run-all-tests.js"

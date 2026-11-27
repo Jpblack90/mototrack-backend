@@ -39,6 +39,13 @@ function httpStatus(errOrCode) {
     KIT_EMPTY:                 422,
     PAYMENT_MISMATCH:          422,
     INVALID_MOTIVO_FOR_BOLETA: 422,
+    INVALID_WORK_ORDER_ITEM:   422,
+    DUPLICATE_WORK_ORDER_ITEM: 422,
+    WORK_ORDER_ITEM_MISMATCH:  422,
+    WORK_ORDER_ITEM_NOT_APPROVED: 422,
+    MISSING_APPROVED_WORK_ORDER_ITEMS: 422,
+    PRODUCT_INACTIVE:          422,
+    KIT_INACTIVE:              422,
   };
   return map[errOrCode] ?? 500;
 }

@@ -192,6 +192,22 @@ export async function createSale({ customer_name, work_order_id, payment_method,
     if (!item || typeof item !== 'object') {
       throw new AppError('Cada ítem debe ser un objeto válido.', 'INVALID_ITEM', 422);
     }
+
+    if (item.work_order_item_id != null) {
+      if (work_order_id == null || String(work_order_id).trim() === '') {
+        throw new AppError(
+          'Solo las ventas asociadas a una orden de trabajo pueden incluir "work_order_item_id".',
+          'INVALID_ITEM',
+          422
+        );
+      }
+      const woItemId = Number(item.work_order_item_id);
+      if (!Number.isInteger(woItemId) || woItemId <= 0) {
+        throw new AppError('"work_order_item_id" debe ser un entero positivo.', 'INVALID_ITEM', 422);
+      }
+      continue;
+    }
+
     const isService = item.type === 'service';
     const hasProduct = item.product_id != null;
     const hasKit = item.kit_id != null;
@@ -230,7 +246,7 @@ export async function createSale({ customer_name, work_order_id, payment_method,
       }
       if (!hasProduct && !hasKit) {
         throw new AppError(
-          'Cada ítem debe tener "product_id", "kit_id" o type "service".',
+          'Cada ítem debe tener "product_id", "kit_id", type "service" o "work_order_item_id".',
           'INVALID_ITEM',
           422
         );
@@ -302,6 +318,67 @@ export async function createSale({ customer_name, work_order_id, payment_method,
       }
     }
 
+    // Validar work_order_items (Opción 1): precios/cantidades desde BD y cobertura completa de aprobadas
+    const woItemsMap = new Map();
+    if (lockedWorkOrder) {
+      const { rows: woItemsRows } = await client.query(
+        `SELECT woi.*,
+                COALESCE(p.name, k.name, woi.description) AS display_name
+         FROM   work_order_items woi
+         LEFT JOIN products p ON p.id = woi.product_id AND p.company_id = woi.company_id
+         LEFT JOIN kits     k ON k.id = woi.kit_id     AND k.company_id = woi.company_id
+         WHERE  woi.work_order_id = $1 AND woi.company_id = $2
+         FOR UPDATE OF woi`,
+        [lockedWorkOrder.id, companyId]
+      );
+
+      for (const row of woItemsRows) {
+        woItemsMap.set(Number(row.id), row);
+      }
+
+      const seenWoItemIds = new Set();
+      for (const item of items) {
+        if (item.work_order_item_id != null) {
+          const woItemId = Number(item.work_order_item_id);
+          if (seenWoItemIds.has(woItemId)) {
+            throw new AppError(
+              `La línea #${woItemId} de la OT está repetida en el cobro.`,
+              'DUPLICATE_WORK_ORDER_ITEM',
+              422
+            );
+          }
+          const woItem = woItemsMap.get(woItemId);
+          if (!woItem) {
+            throw new AppError(
+              `La línea #${woItemId} no pertenece a la orden de trabajo #${lockedWorkOrder.id} de esta empresa.`,
+              'WORK_ORDER_ITEM_MISMATCH',
+              422
+            );
+          }
+          if (woItem.status !== 'aprobada') {
+            throw new AppError(
+              `La línea #${woItemId} ("${woItem.display_name}") está en estado '${woItem.status}' y solo pueden cobrarse líneas aprobadas.`,
+              'WORK_ORDER_ITEM_NOT_APPROVED',
+              422
+            );
+          }
+          seenWoItemIds.add(woItemId);
+        }
+      }
+
+      if (woItemsRows.length > 0) {
+        for (const woItem of woItemsRows) {
+          if (woItem.status === 'aprobada' && !seenWoItemIds.has(Number(woItem.id))) {
+            throw new AppError(
+              `La OT #${lockedWorkOrder.id} tiene líneas aprobadas sin incluir en el cobro (falta #${woItem.id}: "${woItem.display_name}").`,
+              'MISSING_APPROVED_WORK_ORDER_ITEMS',
+              422
+            );
+          }
+        }
+      }
+    }
+
     // Método provisional para el INSERT inicial
     const initialPaymentMethod = payments
       ? (payments.length === 1 ? payments[0].method : 'mixto')
@@ -322,12 +399,18 @@ export async function createSale({ customer_name, work_order_id, payment_method,
     const stockTracker = new Map();
 
     for (const item of items) {
-      const qty = Number(item.quantity);
+      const isFromWoItem = item.work_order_item_id != null;
+      const woItem = isFromWoItem ? woItemsMap.get(Number(item.work_order_item_id)) : null;
 
-      if (item.type === 'service') {
+      const resolvedType = isFromWoItem
+        ? woItem.item_type
+        : (item.type === 'service' ? 'service' : (item.product_id != null ? 'product' : 'kit'));
+      const qty = isFromWoItem ? Number(woItem.quantity) : Number(item.quantity);
+
+      if (resolvedType === 'service') {
         // ── Servicio / Mano de obra (no descuenta stock) ──────────────────────
-        const desc = item.description.trim();
-        const unitPrice = +Number(item.unit_price).toFixed(2);
+        const desc = (isFromWoItem ? woItem.description : item.description).trim();
+        const unitPrice = +(isFromWoItem ? Number(woItem.unit_price) : Number(item.unit_price)).toFixed(2);
         const lineSubtotal = +(unitPrice * qty).toFixed(2);
 
         await client.query(
@@ -338,22 +421,30 @@ export async function createSale({ customer_name, work_order_id, payment_method,
 
         subtotalTotal += lineSubtotal;
 
-      } else if (item.product_id != null) {
+      } else if (resolvedType === 'product') {
         // ── Producto directo ──────────────────────────────────────────────────
+        const targetProductId = isFromWoItem ? woItem.product_id : item.product_id;
         const { rows: prodRows } = await client.query(
-          `SELECT id, name, sale_price FROM products WHERE id = $1 AND company_id = $2 AND is_active = true`,
-          [item.product_id, companyId]
+          `SELECT id, name, sale_price, is_active FROM products WHERE id = $1 AND company_id = $2`,
+          [targetProductId, companyId]
         );
-        if (!prodRows[0]) {
+        const prodRow = prodRows[0];
+        if (!prodRow || !prodRow.is_active) {
+          if (isFromWoItem) {
+            throw new AppError(
+              `El repuesto "${prodRow?.name || woItem.display_name}" aprobado en la OT #${lockedWorkOrder.id} está inactivo o no disponible en inventario.`,
+              'PRODUCT_INACTIVE',
+              422
+            );
+          }
           throw new AppError(
-            `Producto con id ${item.product_id} no encontrado o inactivo.`,
+            `Producto con id ${targetProductId} no encontrado o inactivo.`,
             'PRODUCT_NOT_FOUND',
             404
           );
         }
-        const product = prodRows[0];
 
-        const decRes = await decrementStock(client, product.id, qty, companyId);
+        const decRes = await decrementStock(client, prodRow.id, qty, companyId);
         if (!stockTracker.has(decRes.id)) {
           stockTracker.set(decRes.id, {
             id: decRes.id,
@@ -367,36 +458,49 @@ export async function createSale({ customer_name, work_order_id, payment_method,
           stockTracker.get(decRes.id).final_stock = decRes.stock_after;
         }
 
-        const unitPrice = Number(product.sale_price);
+        const unitPrice = isFromWoItem
+          ? +Number(woItem.unit_price).toFixed(2)
+          : Number(prodRow.sale_price);
         const lineSubtotal = +(unitPrice * qty).toFixed(2);
 
         await client.query(
           `INSERT INTO sale_items (sale_id, item_type, product_id, quantity, unit_price, subtotal)
            VALUES ($1, 'product', $2, $3, $4, $5)`,
-          [saleId, product.id, qty, unitPrice, lineSubtotal]
+          [saleId, prodRow.id, qty, unitPrice, lineSubtotal]
         );
 
         subtotalTotal += lineSubtotal;
 
       } else {
         // ── Kit ───────────────────────────────────────────────────────────────
+        const targetKitId = isFromWoItem ? woItem.kit_id : item.kit_id;
         const { rows: kitRows } = await client.query(
-          `SELECT * FROM kits WHERE id = $1 AND company_id = $2 AND is_active = true`,
-          [item.kit_id, companyId]
+          `SELECT * FROM kits WHERE id = $1 AND company_id = $2`,
+          [targetKitId, companyId]
         );
-        if (!kitRows[0]) {
+        const kit = kitRows[0];
+        if (!kit || !kit.is_active) {
+          if (isFromWoItem) {
+            throw new AppError(
+              `El kit "${kit?.name || woItem.display_name}" aprobado en la OT #${lockedWorkOrder.id} está inactivo o no disponible.`,
+              'KIT_INACTIVE',
+              422
+            );
+          }
           throw new AppError(
-            `Kit con id ${item.kit_id} no encontrado o inactivo.`,
+            `Kit con id ${targetKitId} no encontrado o inactivo.`,
             'KIT_NOT_FOUND',
             404
           );
         }
-        const kit = kitRows[0];
 
         // Traer componentes del kit
         const { rows: components } = await client.query(
-          `SELECT product_id, quantity FROM kit_items WHERE kit_id = $1`,
-          [kit.id]
+          `SELECT ki.product_id, ki.quantity, p.name AS product_name, p.is_active AS product_is_active
+           FROM kit_items ki
+           LEFT JOIN products p ON p.id = ki.product_id AND p.company_id = $2
+           WHERE ki.kit_id = $1`,
+          [kit.id, companyId]
         );
         if (components.length === 0) {
           throw new AppError(
@@ -408,6 +512,20 @@ export async function createSale({ customer_name, work_order_id, payment_method,
 
         // Descontar stock de cada componente
         for (const comp of components) {
+          if (!comp.product_is_active) {
+            if (isFromWoItem) {
+              throw new AppError(
+                `El repuesto "${comp.product_name || `#${comp.product_id}`}" del kit "${kit.name}" (OT #${lockedWorkOrder.id}) está inactivo en inventario.`,
+                'PRODUCT_INACTIVE',
+                422
+              );
+            }
+            throw new AppError(
+              `Producto con id ${comp.product_id} no encontrado o inactivo.`,
+              'PRODUCT_NOT_FOUND',
+              404
+            );
+          }
           const compDecRes = await decrementStock(client, comp.product_id, comp.quantity * qty, companyId);
           if (!stockTracker.has(compDecRes.id)) {
             stockTracker.set(compDecRes.id, {
@@ -424,7 +542,9 @@ export async function createSale({ customer_name, work_order_id, payment_method,
         }
 
         // Una sola línea de sale_items por kit vendido
-        const unitPrice = Number(kit.kit_price);
+        const unitPrice = isFromWoItem
+          ? +Number(woItem.unit_price).toFixed(2)
+          : Number(kit.kit_price);
         const lineSubtotal = +(unitPrice * qty).toFixed(2);
 
         await client.query(

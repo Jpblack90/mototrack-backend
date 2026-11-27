@@ -49,6 +49,7 @@ const SUITES = [
   { name: 'stock-entry',  script: 'scripts/tests/verify-14-2.js' },
   { name: 'platform',     script: 'scripts/tests/verify-p1.js' },
   { name: 'cobro-ot',     script: 'scripts/tests/verify-cobro-ot.js' },
+  { name: 'ot-items',     script: 'scripts/tests/verify-ot-items.js' },
 ];
 
 async function resetRateLimit() {

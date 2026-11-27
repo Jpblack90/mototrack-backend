@@ -212,6 +212,7 @@ async function resetCompanyData(cid) {
   await q('DELETE FROM sale_items WHERE sale_id IN (SELECT id FROM sales WHERE company_id = $1)');
   await q('DELETE FROM sales WHERE company_id = $1');
   await q('DELETE FROM notifications WHERE company_id = $1');
+  await q('DELETE FROM work_order_items WHERE company_id = $1');
   await q('DELETE FROM work_orders WHERE company_id = $1');
   await q('DELETE FROM vehicles WHERE company_id = $1');
   await q('DELETE FROM kit_items WHERE kit_id IN (SELECT id FROM kits WHERE company_id = $1)');

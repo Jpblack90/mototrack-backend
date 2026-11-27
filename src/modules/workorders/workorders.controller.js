@@ -14,17 +14,25 @@ const fail = (res, message, status = 400, code = null) =>
  */
 function httpStatusFromCode(code) {
   const map = {
-    WORK_ORDER_NOT_FOUND:        404,
-    VEHICLE_NOT_FOUND:           404,
-    MECHANIC_NOT_FOUND:          404,
-    WORK_ORDER_NOT_ASSIGNED:     403,
-    STATUS_NOT_ALLOWED_FOR_ROLE: 403,
-    APPROVAL_REQUIRED:           403,
-    INVALID_TRANSITION:          422,
-    MISSING_FIELD:               422,
-    INVALID_FIELD:               422,
-    INVALID_PHONE:               422,
-    INVALID_MECHANIC:            422,  // RETROFIT Fase 6
+    WORK_ORDER_NOT_FOUND:            404,
+    WORK_ORDER_ITEM_NOT_FOUND:       404,
+    VEHICLE_NOT_FOUND:               404,
+    MECHANIC_NOT_FOUND:              404,
+    PRODUCT_NOT_FOUND:               404,
+    KIT_NOT_FOUND:                   404,
+    WORK_ORDER_NOT_ASSIGNED:         403,
+    STATUS_NOT_ALLOWED_FOR_ROLE:     403,
+    APPROVAL_REQUIRED:               403,
+    INVALID_TRANSITION:              422,
+    PENDING_ITEMS:                   422,
+    MISSING_FIELD:                   422,
+    INVALID_FIELD:                   422,
+    INVALID_ITEM:                    422,
+    KIT_EMPTY:                       422,
+    INVALID_PHONE:                   422,
+    INVALID_MECHANIC:                422,  // RETROFIT Fase 6
+    WHATSAPP_NOT_ELIGIBLE:           422,
+    ADDITIONAL_COST_DERIVED_FROM_ITEMS: 422,
   };
   return map[code] ?? 500;
 }
@@ -139,10 +147,13 @@ export async function updateStatus(req, res, next) {
  */
 export async function approveAdditionalWork(req, res, next) {
   try {
-    const result = await svc.approveAdditionalWork(req.params.id, req.user.company_id);
+    const result = await svc.approveAdditionalWork(req.params.id, req.user.company_id, {
+      channel: req.body?.channel,
+      userId: req.user.id,
+    });
     ok(res, result);
   } catch (err) {
-    if (err.code) return fail(res, err.message, httpStatusFromCode(err.code));
+    if (err.code) return fail(res, err.message, err.statusCode || httpStatusFromCode(err.code), err.code);
     next(err);
   }
 }
@@ -152,10 +163,13 @@ export async function approveAdditionalWork(req, res, next) {
  */
 export async function rejectAdditionalWork(req, res, next) {
   try {
-    const result = await svc.rejectAdditionalWork(req.params.id, req.user.company_id);
+    const result = await svc.rejectAdditionalWork(req.params.id, req.user.company_id, {
+      channel: req.body?.channel,
+      userId: req.user.id,
+    });
     ok(res, result);
   } catch (err) {
-    if (err.code) return fail(res, err.message, httpStatusFromCode(err.code));
+    if (err.code) return fail(res, err.message, err.statusCode || httpStatusFromCode(err.code), err.code);
     next(err);
   }
 }
@@ -195,7 +209,74 @@ export async function getOrderNotifications(req, res, next) {
     const data = await svc.getOrderNotifications(req.params.id, req.user.company_id);
     ok(res, data);
   } catch (err) {
-    if (err.code) return fail(res, err.message, httpStatusFromCode(err.code));
+    if (err.code) return fail(res, err.message, err.statusCode || httpStatusFromCode(err.code), err.code);
+    next(err);
+  }
+}
+
+/**
+ * GET /api/workorders/:id/items
+ */
+export async function getOrderItems(req, res, next) {
+  try {
+    const data = await svc.getOrderItems(req.params.id, req.user.company_id, {
+      userRole: req.user.role,
+      userId: req.user.id,
+    });
+    ok(res, data);
+  } catch (err) {
+    if (err.code) return fail(res, err.message, err.statusCode || httpStatusFromCode(err.code), err.code);
+    next(err);
+  }
+}
+
+/**
+ * POST /api/workorders/:id/items
+ */
+export async function addOrderItem(req, res, next) {
+  try {
+    const data = await svc.addOrderItem(req.params.id, req.body, req.user.company_id, {
+      userRole: req.user.role,
+      userId: req.user.id,
+    });
+    ok(res, data, 201);
+  } catch (err) {
+    if (err.code) return fail(res, err.message, err.statusCode || httpStatusFromCode(err.code), err.code);
+    next(err);
+  }
+}
+
+/**
+ * PATCH /api/workorders/:id/items/:itemId/decision
+ */
+export async function decideOrderItem(req, res, next) {
+  try {
+    const data = await svc.decideOrderItem(
+      req.params.id,
+      req.params.itemId,
+      req.body,
+      req.user.company_id,
+      { userRole: req.user.role, userId: req.user.id }
+    );
+    ok(res, data);
+  } catch (err) {
+    if (err.code) return fail(res, err.message, err.statusCode || httpStatusFromCode(err.code), err.code);
+    next(err);
+  }
+}
+
+/**
+ * POST /api/workorders/:id/items/notify-link
+ */
+export async function createOrderItemsNotifyLink(req, res, next) {
+  try {
+    const data = await svc.createOrderItemsNotifyLink(req.params.id, req.user.company_id, {
+      userRole: req.user.role,
+      userId: req.user.id,
+    });
+    ok(res, data);
+  } catch (err) {
+    if (err.code) return fail(res, err.message, err.statusCode || httpStatusFromCode(err.code), err.code);
     next(err);
   }
 }

@@ -1,4 +1,5 @@
 import pool from '../../config/database.js';
+import { logAudit } from '../../shared/audit.js';
 import { normalizePhonePE } from '../../shared/utils/phonePE.js';
 import { buildWhatsAppMessage, WHATSAPP_EVENTS } from './whatsappTemplates.js';
 
@@ -186,6 +187,126 @@ export async function findOrCreateVehicle(
   return rows[0];
 }
 
+const DECISION_CHANNELS = ['presencial', 'whatsapp', 'telefono'];
+const EDITABLE_ITEM_WO_STATUSES = ['recibido', 'diagnostico', 'pendiente_aprobacion', 'en_reparacion'];
+const ORIGIN_BY_WO_STATUS = {
+  recibido: 'recepcion',
+  diagnostico: 'diagnostico',
+  pendiente_aprobacion: 'reparacion',
+  en_reparacion: 'reparacion',
+};
+
+function round2(n) {
+  return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+}
+
+/**
+ * Calcula los totales resumidos de una colección de líneas de work_order_items (sin IGV).
+ */
+export function buildWorkOrderItemsSummary(items = []) {
+  let approvedTotal = 0;
+  let pendingTotal = 0;
+  let rejectedTotal = 0;
+
+  for (const item of items) {
+    const lineSub = round2(Number(item.unit_price) * Number(item.quantity));
+    if (item.status === 'aprobada') approvedTotal = round2(approvedTotal + lineSub);
+    else if (item.status === 'propuesta') pendingTotal = round2(pendingTotal + lineSub);
+    else if (item.status === 'rechazada') rejectedTotal = round2(rejectedTotal + lineSub);
+  }
+
+  return {
+    items_count: items.length,
+    approved_total: approvedTotal,
+    pending_total: pendingTotal,
+    rejected_total: rejectedTotal,
+    active_total: round2(approvedTotal + pendingTotal),
+    has_pending_items: items.some((i) => i.status === 'propuesta'),
+  };
+}
+
+/**
+ * Obtiene en lote las líneas de work_order_items asociadas a un conjunto de OT.
+ */
+async function fetchItemsByWorkOrderIds(workOrderIds, companyId, db = pool) {
+  if (!workOrderIds || workOrderIds.length === 0) return new Map();
+
+  const { rows } = await db.query(
+    `SELECT woi.*,
+            COALESCE(p.name, k.name, woi.description) AS display_name,
+            p.sku AS product_sku,
+            p.stock AS current_stock,
+            p.is_active AS product_is_active,
+            k.is_active AS kit_is_active,
+            cu.name AS created_by_name,
+            du.name AS decided_by_name
+     FROM   work_order_items woi
+     LEFT JOIN products p  ON p.id  = woi.product_id AND p.company_id = woi.company_id
+     LEFT JOIN kits     k  ON k.id  = woi.kit_id     AND k.company_id = woi.company_id
+     LEFT JOIN users    cu ON cu.id = woi.created_by
+     LEFT JOIN users    du ON du.id = woi.decided_by
+     WHERE  woi.work_order_id = ANY($1::int[]) AND woi.company_id = $2
+     ORDER  BY woi.id ASC`,
+    [workOrderIds.map(Number), companyId]
+  );
+
+  const grouped = new Map();
+  for (const row of rows) {
+    const list = grouped.get(row.work_order_id) || [];
+    list.push({
+      ...row,
+      subtotal: round2(Number(row.unit_price) * Number(row.quantity)),
+    });
+    grouped.set(row.work_order_id, list);
+  }
+  return grouped;
+}
+
+/**
+ * Enriquece filas de OT con items, items_count, approved_total y pending_total sin alterar campos existentes.
+ */
+async function attachItemsToOrders(orders, companyId, db = pool) {
+  if (!orders || orders.length === 0) return orders;
+  const ids = orders.map((o) => o.id);
+  const itemsByWo = await fetchItemsByWorkOrderIds(ids, companyId, db);
+
+  return orders.map((o) => {
+    const items = itemsByWo.get(o.id) || [];
+    const summary = buildWorkOrderItemsSummary(items);
+    return {
+      ...o,
+      items,
+      items_count: summary.items_count,
+      approved_total: summary.approved_total,
+      pending_total: summary.pending_total,
+    };
+  });
+}
+
+/**
+ * Recalcula work_orders.additional_cost como la suma de líneas no rechazadas (sin IGV).
+ */
+async function recalculateAdditionalCostInTx(client, workOrderId, companyId) {
+  const { rows: sumRows } = await client.query(
+    `SELECT COALESCE(SUM(ROUND(unit_price * quantity, 2)), 0) AS derived_total
+     FROM   work_order_items
+     WHERE  work_order_id = $1 AND company_id = $2 AND status <> 'rechazada'`,
+    [workOrderId, companyId]
+  );
+  const derivedTotal = round2(sumRows[0]?.derived_total || 0);
+
+  const { rows: woRows } = await client.query(
+    `UPDATE work_orders
+     SET additional_cost = $1,
+         updated_at      = NOW()
+     WHERE id = $2 AND company_id = $3
+     RETURNING *`,
+    [derivedTotal, workOrderId, companyId]
+  );
+
+  return { derivedTotal, updatedWorkOrder: woRows[0] };
+}
+
 // ─── Órdenes de Trabajo ───────────────────────────────────────────────────────
 
 /**
@@ -280,7 +401,14 @@ export async function createWorkOrder(data, companyId) {
     });
   }
 
-  return { ...workOrder, vehicle };
+  return {
+    ...workOrder,
+    vehicle,
+    items: [],
+    items_count: 0,
+    approved_total: 0,
+    pending_total: 0,
+  };
 }
 
 /**
@@ -317,7 +445,7 @@ export async function getAll({ status, mechanicId } = {}, companyId) {
   `;
 
   const { rows } = await pool.query(query, params);
-  return rows;
+  return attachItemsToOrders(rows, companyId);
 }
 
 /**
@@ -338,7 +466,10 @@ export async function getById(id, companyId) {
      WHERE  wo.id = $1 AND wo.company_id = $2`,
     [id, companyId]
   );
-  return rows[0] ?? null;
+  const order = rows[0] ?? null;
+  if (!order) return null;
+  const [enriched] = await attachItemsToOrders([order], companyId);
+  return enriched;
 }
 
 /**
@@ -360,7 +491,7 @@ export async function getHistoryByPlaca(placa, companyId) {
      ORDER  BY wo.created_at DESC`,
     [placa.trim().toUpperCase(), companyId]
   );
-  return rows;
+  return attachItemsToOrders(rows, companyId);
 }
 
 /**
@@ -514,165 +645,382 @@ export async function updateStatus(
   companyId,
   { userRole, userId } = {}
 ) {
-  // a) Verificar que la OT existe en la empresa
-  const current = await getById(id, companyId);
-  if (!current) {
-    throw new AppError(`Orden de trabajo #${id} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
-  }
-
-  assertCanTransitionWorkOrder(current, newStatus, { userRole, userId });
-
-  const currentStatus = current.status;
-
-  // c) Regla RF-16: desviar a pendiente_aprobacion si el costo supera el umbral configurado de la empresa
+  const client = await pool.connect();
+  let updated;
   let resolvedStatus = newStatus;
   let requiresApproval = false;
+  let effectiveAdditionalCost = null;
 
-  // Obtener el umbral de aprobación configurado para la empresa
-  const { rows: compRows } = await pool.query(
-    'SELECT approval_threshold FROM companies WHERE id = $1',
-    [companyId]
-  );
-  const approvalThreshold = compRows[0] && compRows[0].approval_threshold != null
-    ? Number(compRows[0].approval_threshold)
-    : 100;
+  try {
+    await client.query('BEGIN');
 
-  if (
-    currentStatus === 'diagnostico' &&
-    newStatus === 'en_reparacion' &&
-    additional_cost != null &&
-    Number(additional_cost) > approvalThreshold
-  ) {
-    resolvedStatus = 'pendiente_aprobacion';
-    requiresApproval = true;
-  }
-
-  // d) Si el estado destino es 'terminado', rellenar terminado_at
-  const isTerminado = resolvedStatus === 'terminado';
-
-  const { rows } = await pool.query(
-    `UPDATE work_orders
-     SET
-       status          = $1,
-       diagnosis_notes = COALESCE($2, diagnosis_notes),
-       additional_cost = COALESCE($3, additional_cost),
-       terminado_at    = CASE WHEN $4 THEN NOW() ELSE terminado_at END,
-       updated_at      = NOW()
-     WHERE id = $5 AND company_id = $6
-     RETURNING *`,
-    [
-      resolvedStatus,
-      diagnosis_notes ?? null,
-      additional_cost != null ? Number(additional_cost) : null,
-      isTerminado,
-      id,
-      companyId,
-    ]
-  );
-
-  const updated = rows[0];
-
-  // e) Notificar al cliente si aplica plantilla de WhatsApp (RF-15)
-  if (resolvedStatus === 'pendiente_aprobacion') {
-    await createWhatsAppNoticeIfEligible({
-      workOrderId: id,
-      companyId,
-      event: WHATSAPP_EVENTS.PENDIENTE_APROBACION,
-      params: { monto: additional_cost ?? updated.additional_cost },
-    });
-  } else if (resolvedStatus === 'terminado') {
-    await createWhatsAppNoticeIfEligible({
-      workOrderId: id,
-      companyId,
-      event: WHATSAPP_EVENTS.TERMINADO,
-    });
-  } else if (resolvedStatus === 'no_recogido') {
-    const dias = Math.max(
-      1,
-      Math.floor(
-        (Date.now() - new Date(updated.terminado_at || updated.updated_at).getTime()) /
-          (1000 * 60 * 60 * 24)
-      )
+    // a) Verificar que la OT existe en la empresa y bloquearla
+    const { rows: woRows } = await client.query(
+      `SELECT * FROM work_orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [id, companyId]
     );
-    await createWhatsAppNoticeIfEligible({
-      workOrderId: id,
-      companyId,
-      event: WHATSAPP_EVENTS.NO_RECOGIDO,
-      params: { dias },
-    });
-  }
+    const current = woRows[0];
+    if (!current) {
+      throw new AppError(`Orden de trabajo #${id} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
+    }
 
-  return { ...updated, requiresApproval };
+    assertCanTransitionWorkOrder(current, newStatus, { userRole, userId });
+
+    const currentStatus = current.status;
+
+    // Consultar líneas detalladas en work_order_items (si existen, gobiernan montos y candados)
+    const { rows: woItems } = await client.query(
+      `SELECT id, status, unit_price, quantity
+       FROM   work_order_items
+       WHERE  work_order_id = $1 AND company_id = $2
+       FOR UPDATE`,
+      [id, companyId]
+    );
+
+    const hasItems = woItems.length > 0;
+    const summary = buildWorkOrderItemsSummary(woItems);
+    const derivedTotal = summary.active_total;
+    const pendingItems = woItems.filter((it) => it.status === 'propuesta');
+
+    // b) Opción A: si la OT tiene líneas, rechazar additional_cost distinto del derivado (tolerancia 0.01)
+    if (
+      hasItems &&
+      additional_cost !== undefined &&
+      additional_cost !== null &&
+      String(additional_cost).trim() !== ''
+    ) {
+      const sentCost = Number(additional_cost);
+      if (!Number.isFinite(sentCost) || Math.abs(sentCost - derivedTotal) > 0.01) {
+        throw new AppError(
+          `Esta orden tiene repuestos o servicios por línea (total S/ ${derivedTotal.toFixed(2)}). Agrega o decide las líneas desde la orden en lugar de editar el monto adicional.`,
+          'ADDITIONAL_COST_DERIVED_FROM_ITEMS',
+          422
+        );
+      }
+    }
+
+    // c) Bloqueo en_reparacion → terminado mientras haya líneas pendientes de aprobación
+    if (hasItems && currentStatus === 'en_reparacion' && newStatus === 'terminado' && pendingItems.length > 0) {
+      throw new AppError(
+        `No puedes marcar la orden como terminada porque hay ${pendingItems.length} ítem(s) pendiente(s) de aprobación del cliente.`,
+        'PENDING_ITEMS',
+        422
+      );
+    }
+
+    // d) Regla RF-16: desviar a pendiente_aprobacion si supera el umbral configurado
+    const { rows: compRows } = await client.query(
+      'SELECT approval_threshold FROM companies WHERE id = $1',
+      [companyId]
+    );
+    const approvalThreshold =
+      compRows[0] && compRows[0].approval_threshold != null
+        ? Number(compRows[0].approval_threshold)
+        : 100;
+
+    effectiveAdditionalCost = hasItems
+      ? derivedTotal
+      : additional_cost != null && String(additional_cost).trim() !== ''
+        ? Number(additional_cost)
+        : null;
+
+    if (
+      currentStatus === 'diagnostico' &&
+      newStatus === 'en_reparacion' &&
+      effectiveAdditionalCost != null &&
+      effectiveAdditionalCost > approvalThreshold
+    ) {
+      resolvedStatus = 'pendiente_aprobacion';
+      requiresApproval = true;
+    } else if (
+      hasItems &&
+      currentStatus === 'diagnostico' &&
+      newStatus === 'en_reparacion' &&
+      pendingItems.length > 0
+    ) {
+      // No superó el umbral: aprobar automáticamente las líneas propuestas con canal 'umbral'
+      const { rows: approvedRows } = await client.query(
+        `UPDATE work_order_items
+         SET status           = 'aprobada',
+             decided_by       = $1,
+             decided_at       = NOW(),
+             decision_channel = 'umbral',
+             updated_at       = NOW()
+         WHERE work_order_id = $2 AND company_id = $3 AND status = 'propuesta'
+         RETURNING *`,
+        [userId ?? null, id, companyId]
+      );
+      for (const item of approvedRows) {
+        await logAudit(client, {
+          companyId,
+          userId: userId ?? null,
+          entity: 'work_order_item',
+          entityId: item.id,
+          action: 'update',
+          changes: {
+            work_order_id: Number(id),
+            status: { old: 'propuesta', new: 'aprobada' },
+            decision_channel: 'umbral',
+          },
+        });
+      }
+    }
+
+    // e) Si el estado destino es 'terminado', rellenar terminado_at
+    const isTerminado = resolvedStatus === 'terminado';
+
+    const { rows } = await client.query(
+      `UPDATE work_orders
+       SET
+         status          = $1,
+         diagnosis_notes = COALESCE($2, diagnosis_notes),
+         additional_cost = CASE WHEN $7 THEN $3 ELSE COALESCE($3, additional_cost) END,
+         terminado_at    = CASE WHEN $4 THEN NOW() ELSE terminado_at END,
+         updated_at      = NOW()
+       WHERE id = $5 AND company_id = $6
+       RETURNING *`,
+      [
+        resolvedStatus,
+        diagnosis_notes ?? null,
+        effectiveAdditionalCost,
+        isTerminado,
+        id,
+        companyId,
+        hasItems,
+      ]
+    );
+
+    updated = rows[0];
+
+    // f) Notificar al cliente si aplica plantilla de WhatsApp (RF-15)
+    if (resolvedStatus === 'pendiente_aprobacion') {
+      await createWhatsAppNoticeIfEligible({
+        workOrderId: id,
+        companyId,
+        event: WHATSAPP_EVENTS.PENDIENTE_APROBACION,
+        params: { monto: effectiveAdditionalCost ?? updated.additional_cost },
+        clientOrPool: client,
+      });
+    } else if (resolvedStatus === 'terminado') {
+      await createWhatsAppNoticeIfEligible({
+        workOrderId: id,
+        companyId,
+        event: WHATSAPP_EVENTS.TERMINADO,
+        clientOrPool: client,
+      });
+    } else if (resolvedStatus === 'no_recogido') {
+      const dias = Math.max(
+        1,
+        Math.floor(
+          (Date.now() - new Date(updated.terminado_at || updated.updated_at).getTime()) /
+            (1000 * 60 * 60 * 24)
+        )
+      );
+      await createWhatsAppNoticeIfEligible({
+        workOrderId: id,
+        companyId,
+        event: WHATSAPP_EVENTS.NO_RECOGIDO,
+        params: { dias },
+        clientOrPool: client,
+      });
+    }
+
+    await client.query('COMMIT');
+    return { ...updated, requiresApproval };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /**
  * UC-03 FA-1: el cliente aprueba el trabajo adicional.
  * Solo válido si status === 'pendiente_aprobacion'.
- * Mueve a 'en_reparacion'.
+ * Mueve a 'en_reparacion' y aprueba en lote las líneas en estado 'propuesta'.
  *
  * @param {number|string} id
  * @param {number}        companyId
+ * @param {{ channel?: string, userId?: number }} [options]
  */
-export async function approveAdditionalWork(id, companyId) {
-  const current = await getById(id, companyId);
-  if (!current) {
-    throw new AppError(`Orden de trabajo #${id} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
-  }
-  if (current.status !== 'pendiente_aprobacion') {
+export async function approveAdditionalWork(id, companyId, { channel, userId } = {}) {
+  const resolvedChannel = channel ?? 'presencial';
+  if (!DECISION_CHANNELS.includes(resolvedChannel)) {
     throw new AppError(
-      `Solo se puede aprobar una OT en estado 'pendiente_aprobacion'. Estado actual: '${current.status}'.`,
-      'INVALID_TRANSITION',
+      `Canal de decisión inválido. Debe ser: ${DECISION_CHANNELS.join(', ')}.`,
+      'INVALID_FIELD',
       422
     );
   }
 
-  const { rows } = await pool.query(
-    `UPDATE work_orders
-     SET status = 'en_reparacion', updated_at = NOW()
-     WHERE id = $1 AND company_id = $2
-     RETURNING *`,
-    [id, companyId]
-  );
+  const client = await pool.connect();
+  let updated;
+  try {
+    await client.query('BEGIN');
+
+    const { rows: currentRows } = await client.query(
+      `SELECT * FROM work_orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [id, companyId]
+    );
+    const current = currentRows[0];
+    if (!current) {
+      throw new AppError(`Orden de trabajo #${id} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
+    }
+    if (current.status !== 'pendiente_aprobacion') {
+      throw new AppError(
+        `Solo se puede aprobar una OT en estado 'pendiente_aprobacion'. Estado actual: '${current.status}'.`,
+        'INVALID_TRANSITION',
+        422
+      );
+    }
+
+    const { rows } = await client.query(
+      `UPDATE work_orders
+       SET status = 'en_reparacion', updated_at = NOW()
+       WHERE id = $1 AND company_id = $2
+       RETURNING *`,
+      [id, companyId]
+    );
+    updated = rows[0];
+
+    const { rows: approvedRows } = await client.query(
+      `UPDATE work_order_items
+       SET status           = 'aprobada',
+           decided_by       = $1,
+           decided_at       = NOW(),
+           decision_channel = $2,
+           updated_at       = NOW()
+       WHERE work_order_id = $3 AND company_id = $4 AND status = 'propuesta'
+       RETURNING *`,
+      [userId ?? null, resolvedChannel, id, companyId]
+    );
+    for (const item of approvedRows) {
+      await logAudit(client, {
+        companyId,
+        userId: userId ?? null,
+        entity: 'work_order_item',
+        entityId: item.id,
+        action: 'update',
+        changes: {
+          work_order_id: Number(id),
+          status: { old: 'propuesta', new: 'aprobada' },
+          decision_channel: resolvedChannel,
+        },
+      });
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 
   await notifyClient(id, 'El cliente aprobó el trabajo adicional. La reparación ha comenzado.', companyId);
-  return rows[0];
+  return updated;
 }
 
 /**
  * UC-03 FA-2: el cliente rechaza el trabajo adicional.
  * Solo válido si status === 'pendiente_aprobacion'.
- * Mueve a 'entregado' (cierre parcial).
+ * Mueve a 'entregado' (cierre parcial) y rechaza las líneas en estado 'propuesta'.
  *
  * @param {number|string} id
  * @param {number}        companyId
+ * @param {{ channel?: string, userId?: number }} [options]
  */
-export async function rejectAdditionalWork(id, companyId) {
-  const current = await getById(id, companyId);
-  if (!current) {
-    throw new AppError(`Orden de trabajo #${id} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
-  }
-  if (current.status !== 'pendiente_aprobacion') {
+export async function rejectAdditionalWork(id, companyId, { channel, userId } = {}) {
+  const resolvedChannel = channel ?? 'presencial';
+  if (!DECISION_CHANNELS.includes(resolvedChannel)) {
     throw new AppError(
-      `Solo se puede rechazar una OT en estado 'pendiente_aprobacion'. Estado actual: '${current.status}'.`,
-      'INVALID_TRANSITION',
+      `Canal de decisión inválido. Debe ser: ${DECISION_CHANNELS.join(', ')}.`,
+      'INVALID_FIELD',
       422
     );
   }
 
-  const { rows } = await pool.query(
-    `UPDATE work_orders
-     SET status = 'entregado', updated_at = NOW()
-     WHERE id = $1 AND company_id = $2
-     RETURNING *`,
-    [id, companyId]
-  );
+  const client = await pool.connect();
+  let updated;
+  try {
+    await client.query('BEGIN');
+
+    const { rows: currentRows } = await client.query(
+      `SELECT * FROM work_orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [id, companyId]
+    );
+    const current = currentRows[0];
+    if (!current) {
+      throw new AppError(`Orden de trabajo #${id} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
+    }
+    if (current.status !== 'pendiente_aprobacion') {
+      throw new AppError(
+        `Solo se puede rechazar una OT en estado 'pendiente_aprobacion'. Estado actual: '${current.status}'.`,
+        'INVALID_TRANSITION',
+        422
+      );
+    }
+
+    const { rows: rejectedRows } = await client.query(
+      `UPDATE work_order_items
+       SET status           = 'rechazada',
+           decided_by       = $1,
+           decided_at       = NOW(),
+           decision_channel = $2,
+           updated_at       = NOW()
+       WHERE work_order_id = $3 AND company_id = $4 AND status = 'propuesta'
+       RETURNING *`,
+      [userId ?? null, resolvedChannel, id, companyId]
+    );
+
+    const { rows: hasItemsRows } = await client.query(
+      `SELECT COUNT(*)::int AS cnt FROM work_order_items WHERE work_order_id = $1 AND company_id = $2`,
+      [id, companyId]
+    );
+
+    if (rejectedRows.length > 0 || Number(hasItemsRows[0]?.cnt) > 0) {
+      await recalculateAdditionalCostInTx(client, id, companyId);
+    }
+
+    const { rows } = await client.query(
+      `UPDATE work_orders
+       SET status = 'entregado', updated_at = NOW()
+       WHERE id = $1 AND company_id = $2
+       RETURNING *`,
+      [id, companyId]
+    );
+    updated = rows[0];
+
+    for (const item of rejectedRows) {
+      await logAudit(client, {
+        companyId,
+        userId: userId ?? null,
+        entity: 'work_order_item',
+        entityId: item.id,
+        action: 'update',
+        changes: {
+          work_order_id: Number(id),
+          status: { old: 'propuesta', new: 'rechazada' },
+          decision_channel: resolvedChannel,
+        },
+      });
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 
   await notifyClient(
     id,
     'El cliente rechazó el trabajo adicional. El vehículo será devuelto con el diagnóstico realizado.',
     companyId
   );
-  return rows[0];
+  return updated;
 }
 
 /**
@@ -903,4 +1251,442 @@ export async function getOrderNotifications(orderId, companyId) {
     [orderId, companyId]
   );
   return rows;
+}
+
+// ─── Ítems por línea en Órdenes de Trabajo (cuenta abierta) ──────────────────
+
+/**
+ * GET /api/workorders/:id/items
+ * Admin, cajero y almacenero ven cualquier OT de la empresa; mecánico solo sus OT asignadas.
+ */
+export async function getOrderItems(workOrderId, companyId, { userRole, userId } = {}) {
+  const { rows: woRows } = await pool.query(
+    `SELECT id, mechanic_id, status FROM work_orders WHERE id = $1 AND company_id = $2`,
+    [workOrderId, companyId]
+  );
+  const current = woRows[0];
+  if (!current) {
+    throw new AppError(`Orden de trabajo #${workOrderId} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
+  }
+  if (userRole === 'mecanico' && (!current.mechanic_id || Number(current.mechanic_id) !== Number(userId))) {
+    throw new AppError('Esta orden no está asignada a ti.', 'WORK_ORDER_NOT_ASSIGNED', 403);
+  }
+
+  const itemsMap = await fetchItemsByWorkOrderIds([current.id], companyId);
+  const items = itemsMap.get(current.id) || [];
+  return {
+    items,
+    summary: buildWorkOrderItemsSummary(items),
+  };
+}
+
+/**
+ * POST /api/workorders/:id/items
+ * Solo admin y cajero. Agrega línea product | kit | service a una OT abierta.
+ * Toda línea nueva nace en 'propuesta', congela unit_price sin IGV del catálogo o servicio,
+ * emite stock_warning sin bloquear si el stock no alcanza, y recalcula additional_cost.
+ */
+export async function addOrderItem(workOrderId, data = {}, companyId, { userId } = {}) {
+  const { type, product_id, kit_id, description, unit_price, quantity = 1 } = data;
+
+  if (!['product', 'kit', 'service'].includes(type)) {
+    throw new AppError('El tipo de línea ("type") debe ser "product", "kit" o "service".', 'INVALID_ITEM', 422);
+  }
+
+  const qty = Number(quantity);
+  if (!Number.isInteger(qty) || qty < 1) {
+    throw new AppError('"quantity" debe ser un número entero mayor o igual a 1.', 'INVALID_FIELD', 422);
+  }
+
+  if (type === 'product' && (!Number.isInteger(Number(product_id)) || Number(product_id) <= 0 || kit_id != null)) {
+    throw new AppError('Debes seleccionar un producto válido.', 'INVALID_ITEM', 422);
+  }
+  if (type === 'kit' && (!Number.isInteger(Number(kit_id)) || Number(kit_id) <= 0 || product_id != null)) {
+    throw new AppError('Debes seleccionar un kit válido.', 'INVALID_ITEM', 422);
+  }
+
+  let serviceDesc = null;
+  let servicePrice = null;
+  if (type === 'service') {
+    if (product_id != null || kit_id != null) {
+      throw new AppError('Una línea de servicio no puede incluir producto ni kit.', 'INVALID_ITEM', 422);
+    }
+    serviceDesc = typeof description === 'string' ? description.trim() : '';
+    if (serviceDesc.length < 1 || serviceDesc.length > 200) {
+      throw new AppError('La descripción del servicio debe tener entre 1 y 200 caracteres.', 'INVALID_ITEM', 422);
+    }
+    const parsedPrice = Number(unit_price);
+    if (!Number.isFinite(parsedPrice) || parsedPrice <= 0) {
+      throw new AppError('El precio unitario del servicio debe ser mayor a 0.', 'INVALID_ITEM', 422);
+    }
+    servicePrice = round2(parsedPrice);
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: woRows } = await client.query(
+      `SELECT id, status, company_id FROM work_orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [workOrderId, companyId]
+    );
+    const wo = woRows[0];
+    if (!wo) {
+      throw new AppError(`Orden de trabajo #${workOrderId} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
+    }
+    if (!EDITABLE_ITEM_WO_STATUSES.includes(wo.status)) {
+      throw new AppError(
+        `No se pueden agregar líneas cuando la OT está en estado '${wo.status}'.`,
+        'INVALID_TRANSITION',
+        422
+      );
+    }
+
+    const origin = ORIGIN_BY_WO_STATUS[wo.status] || 'diagnostico';
+    let resolvedUnitPrice = servicePrice;
+    let resolvedProductId = null;
+    let resolvedKitId = null;
+    let displayName = serviceDesc;
+    let stockWarning = null;
+
+    if (type === 'product') {
+      const { rows: prodRows } = await client.query(
+        `SELECT id, name, sale_price, stock FROM products WHERE id = $1 AND company_id = $2 AND is_active = true`,
+        [Number(product_id), companyId]
+      );
+      if (!prodRows[0]) {
+        throw new AppError(`Producto #${product_id} no encontrado o inactivo.`, 'PRODUCT_NOT_FOUND', 404);
+      }
+      const prod = prodRows[0];
+      resolvedProductId = prod.id;
+      resolvedUnitPrice = round2(prod.sale_price);
+      if (resolvedUnitPrice <= 0) {
+        throw new AppError(`El producto "${prod.name}" no tiene un precio de venta válido (> 0).`, 'INVALID_ITEM', 422);
+      }
+      displayName = prod.name;
+
+      const { rows: activeQtyRows } = await client.query(
+        `SELECT COALESCE(SUM(quantity), 0)::int AS qty
+         FROM work_order_items
+         WHERE work_order_id = $1 AND company_id = $2 AND product_id = $3 AND status <> 'rechazada'`,
+        [wo.id, companyId, prod.id]
+      );
+      const totalNeeded = Number(activeQtyRows[0]?.qty || 0) + qty;
+      const available = Number(prod.stock);
+      if (available < totalNeeded) {
+        stockWarning = {
+          product_id: prod.id,
+          product_name: prod.name,
+          available_stock: available,
+          requested_quantity: qty,
+          ot_total_quantity: totalNeeded,
+          message: `Stock insuficiente para "${prod.name}": disponible ${available}, requerido en esta OT ${totalNeeded}.`,
+        };
+      }
+    } else if (type === 'kit') {
+      const { rows: kitRows } = await client.query(
+        `SELECT id, name, kit_price FROM kits WHERE id = $1 AND company_id = $2 AND is_active = true`,
+        [Number(kit_id), companyId]
+      );
+      if (!kitRows[0]) {
+        throw new AppError(`Kit #${kit_id} no encontrado o inactivo.`, 'KIT_NOT_FOUND', 404);
+      }
+      const kit = kitRows[0];
+      const { rows: components } = await client.query(
+        `SELECT ki.product_id, ki.quantity, p.name, p.stock
+         FROM kit_items ki
+         JOIN products p ON p.id = ki.product_id AND p.company_id = $2
+         WHERE ki.kit_id = $1`,
+        [kit.id, companyId]
+      );
+      if (components.length === 0) {
+        throw new AppError(`El kit "${kit.name}" no tiene componentes definidos.`, 'KIT_EMPTY', 422);
+      }
+      resolvedKitId = kit.id;
+      resolvedUnitPrice = round2(kit.kit_price);
+      if (resolvedUnitPrice <= 0) {
+        throw new AppError(`El kit "${kit.name}" debe tener un precio mayor a 0.`, 'INVALID_ITEM', 422);
+      }
+      displayName = kit.name;
+
+      const lowComps = components
+        .filter((c) => Number(c.stock) < Number(c.quantity) * qty)
+        .map((c) => ({
+          product_id: c.product_id,
+          product_name: c.name,
+          available_stock: Number(c.stock),
+          requested_quantity: Number(c.quantity) * qty,
+        }));
+      if (lowComps.length > 0) {
+        stockWarning = {
+          kit_id: kit.id,
+          kit_name: kit.name,
+          components: lowComps,
+          message: `Stock insuficiente en componente(s) del kit "${kit.name}": ${lowComps
+            .map((c) => `${c.product_name} (disp. ${c.available_stock}, req. ${c.requested_quantity})`)
+            .join(', ')}.`,
+        };
+      }
+    }
+
+    const { rows: insRows } = await client.query(
+      `INSERT INTO work_order_items
+         (company_id, work_order_id, item_type, product_id, kit_id, description,
+          quantity, unit_price, status, origin, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'propuesta', $9, $10)
+       RETURNING *`,
+      [
+        companyId,
+        wo.id,
+        type,
+        resolvedProductId,
+        resolvedKitId,
+        type === 'service' ? serviceDesc : null,
+        qty,
+        resolvedUnitPrice,
+        origin,
+        userId ?? null,
+      ]
+    );
+    const createdItem = insRows[0];
+
+    const { derivedTotal, updatedWorkOrder } = await recalculateAdditionalCostInTx(client, wo.id, companyId);
+
+    await logAudit(client, {
+      companyId,
+      userId: userId ?? null,
+      entity: 'work_order_item',
+      entityId: createdItem.id,
+      action: 'create',
+      changes: {
+        work_order_id: wo.id,
+        item_type: type,
+        display_name: displayName,
+        quantity: qty,
+        unit_price: resolvedUnitPrice,
+        origin,
+        status: 'propuesta',
+        additional_cost: derivedTotal,
+      },
+    });
+
+    const itemsMap = await fetchItemsByWorkOrderIds([wo.id], companyId, client);
+    const allItems = itemsMap.get(wo.id) || [];
+    const enrichedCreated = allItems.find((it) => it.id === createdItem.id) || createdItem;
+
+    await client.query('COMMIT');
+
+    return {
+      item: enrichedCreated,
+      summary: buildWorkOrderItemsSummary(allItems),
+      work_order: updatedWorkOrder,
+      stock_warning: stockWarning,
+    };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * PATCH /api/workorders/:id/items/:itemId/decision
+ * Solo admin y cajero. Decide una línea en estado 'propuesta' hacia 'aprobada' o 'rechazada'.
+ */
+export async function decideOrderItem(workOrderId, itemId, { decision, channel } = {}, companyId, { userId } = {}) {
+  if (!['aprobada', 'rechazada'].includes(decision)) {
+    throw new AppError('La decisión debe ser "aprobada" o "rechazada".', 'INVALID_FIELD', 422);
+  }
+  if (!DECISION_CHANNELS.includes(channel)) {
+    throw new AppError(
+      `El canal de decisión ("channel") debe ser uno de: ${DECISION_CHANNELS.join(', ')}.`,
+      'INVALID_FIELD',
+      422
+    );
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: woRows } = await client.query(
+      `SELECT id, status FROM work_orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [workOrderId, companyId]
+    );
+    const wo = woRows[0];
+    if (!wo) {
+      throw new AppError(`Orden de trabajo #${workOrderId} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
+    }
+    if (!EDITABLE_ITEM_WO_STATUSES.includes(wo.status)) {
+      throw new AppError(
+        `No se pueden decidir líneas cuando la OT está en estado '${wo.status}'.`,
+        'INVALID_TRANSITION',
+        422
+      );
+    }
+
+    const { rows: itemRows } = await client.query(
+      `SELECT * FROM work_order_items
+       WHERE id = $1 AND work_order_id = $2 AND company_id = $3
+       FOR UPDATE`,
+      [itemId, workOrderId, companyId]
+    );
+    const existing = itemRows[0];
+    if (!existing) {
+      throw new AppError(
+        `Línea #${itemId} no encontrada en la orden #${workOrderId}.`,
+        'WORK_ORDER_ITEM_NOT_FOUND',
+        404
+      );
+    }
+    if (existing.status !== 'propuesta') {
+      throw new AppError(
+        `La línea #${itemId} ya fue decidida (estado actual: '${existing.status}').`,
+        'INVALID_TRANSITION',
+        422
+      );
+    }
+
+    await client.query(
+      `UPDATE work_order_items
+       SET status           = $1,
+           decided_by       = $2,
+           decided_at       = NOW(),
+           decision_channel = $3,
+           updated_at       = NOW()
+       WHERE id = $4 AND company_id = $5`,
+      [decision, userId ?? null, channel, existing.id, companyId]
+    );
+
+    const { derivedTotal, updatedWorkOrder } = await recalculateAdditionalCostInTx(client, wo.id, companyId);
+
+    await logAudit(client, {
+      companyId,
+      userId: userId ?? null,
+      entity: 'work_order_item',
+      entityId: existing.id,
+      action: 'update',
+      changes: {
+        work_order_id: wo.id,
+        status: { old: 'propuesta', new: decision },
+        decision_channel: channel,
+        additional_cost: derivedTotal,
+      },
+    });
+
+    const itemsMap = await fetchItemsByWorkOrderIds([wo.id], companyId, client);
+    const allItems = itemsMap.get(wo.id) || [];
+    const updatedItem = allItems.find((it) => it.id === existing.id);
+
+    await client.query('COMMIT');
+
+    return {
+      item: updatedItem,
+      summary: buildWorkOrderItemsSummary(allItems),
+      work_order: updatedWorkOrder,
+    };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * POST /api/workorders/:id/items/notify-link
+ * Reutiliza el mecanismo de consentimiento whatsapp_opt_in y wa.me del sistema:
+ * arma el mensaje con las líneas en estado 'propuesta' y su total con IGV,
+ * registra una fila en notifications y retorna el enlace sin enviarlo automáticamente.
+ */
+export async function createOrderItemsNotifyLink(workOrderId, companyId, _actor = {}) {
+  const { rows: woRows } = await pool.query(
+    `SELECT wo.id, wo.status,
+            v.placa, v.customer_name, v.customer_phone, v.whatsapp_opt_in,
+            c.igv_rate, c.nombre_comercial, c.razon_social
+     FROM   work_orders wo
+     JOIN   vehicles v  ON v.id = wo.vehicle_id
+     JOIN   companies c ON c.id = wo.company_id
+     WHERE  wo.id = $1 AND wo.company_id = $2`,
+    [workOrderId, companyId]
+  );
+  const wo = woRows[0];
+  if (!wo) {
+    throw new AppError(`Orden de trabajo #${workOrderId} no encontrada.`, 'WORK_ORDER_NOT_FOUND', 404);
+  }
+
+  const itemsMap = await fetchItemsByWorkOrderIds([wo.id], companyId);
+  const items = itemsMap.get(wo.id) || [];
+  const pending = items.filter((it) => it.status === 'propuesta');
+  if (pending.length === 0) {
+    throw new AppError(
+      'No hay líneas pendientes por aprobar en esta orden para notificar.',
+      'INVALID_TRANSITION',
+      422
+    );
+  }
+
+  if (!wo.whatsapp_opt_in) {
+    throw new AppError(
+      'El cliente no autorizó recibir avisos por WhatsApp para este vehículo.',
+      'WHATSAPP_NOT_ELIGIBLE',
+      422
+    );
+  }
+
+  const phone = normalizePhonePE(wo.customer_phone);
+  if (!phone) {
+    throw new AppError(
+      'El cliente no tiene un número de celular peruano válido (9 dígitos) registrado.',
+      'WHATSAPP_NOT_ELIGIBLE',
+      422
+    );
+  }
+
+  const igvRate = wo.igv_rate != null ? Number(wo.igv_rate) : 0.18;
+  const pendingSubtotal = round2(
+    pending.reduce((acc, it) => acc + round2(Number(it.unit_price) * Number(it.quantity)), 0)
+  );
+  const pendingIgv = round2(pendingSubtotal * igvRate);
+  const pendingTotal = round2(pendingSubtotal + pendingIgv);
+
+  const cliente = wo.customer_name ? String(wo.customer_name).trim() : '';
+  const placa = wo.placa ? String(wo.placa).trim().toUpperCase() : '';
+  const taller = (wo.nombre_comercial || wo.razon_social || '').trim();
+  const saludo = cliente ? `Hola ${cliente}` : 'Hola';
+  const refMoto = placa ? `tu moto ${placa}` : 'tu moto';
+  const enTaller = taller ? ` en ${taller}` : '';
+
+  const linesText = pending
+    .map((it) => {
+      const sub = round2(Number(it.unit_price) * Number(it.quantity)).toFixed(2);
+      return `• ${it.display_name} x${it.quantity}: S/ ${sub}`;
+    })
+    .join('\n');
+
+  const igvPct = Math.round(igvRate * 100);
+  const message =
+    `${saludo}, para continuar con ${refMoto}${enTaller}, requerimos tu aprobación de:\n` +
+    `${linesText}\n` +
+    `Subtotal: S/ ${pendingSubtotal.toFixed(2)} + IGV (${igvPct}%): S/ ${pendingIgv.toFixed(2)} = Total: S/ ${pendingTotal.toFixed(2)}\n` +
+    `Por favor confírmanos si autorizas estos trabajos adicionales.`;
+
+  const { rows: notifRows } = await pool.query(
+    `INSERT INTO notifications (company_id, work_order_id, message, channel, status, event)
+     VALUES ($1, $2, $3, 'whatsapp', 'pending', $4)
+     RETURNING id`,
+    [companyId, wo.id, message, WHATSAPP_EVENTS.PENDIENTE_APROBACION]
+  );
+
+  return {
+    notification_id: notifRows[0].id,
+    url: `https://wa.me/${phone}?text=${encodeURIComponent(message)}`,
+    phone,
+    message,
+    pending_count: pending.length,
+    pending_subtotal: pendingSubtotal,
+    pending_igv: pendingIgv,
+    pending_total: pendingTotal,
+  };
 }

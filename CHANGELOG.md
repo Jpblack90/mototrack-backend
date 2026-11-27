@@ -4,6 +4,21 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 Cada entrada indica el integrante responsable entre paréntesis.
 
 ## [Unreleased]
+### Added (OT como cuenta abierta - work_order_items)
+- Migración idempotente `scripts/migrations/018_work_order_items.sql`:
+  - Nueva tabla `work_order_items` (`item_type` `'product'|'kit'|'service'`, `product_id`/`kit_id` nullable con `chk_work_order_item_type_consistency`, `description`, `quantity >= 1`, `unit_price NUMERIC(10,2) > 0` congelado sin IGV, `status` `'propuesta'|'aprobada'|'rechazada'`, `origin` `'recepcion'|'diagnostico'|'reparacion'`, `created_by`, `decided_by`, `decided_at`, `decision_channel` `'presencial'|'whatsapp'|'telefono'|'umbral'`).
+- `src/modules/workorders/workorders.routes.js`, `workorders.controller.js`, `workorders.service.js`:
+  - `GET /api/workorders/:id/items` (`admin`, `cajero`, `almacenero`; `mecanico` solo en OT asignadas).
+  - `POST /api/workorders/:id/items` (`admin`, `cajero`): agrega línea `propuesta` con precio congelado de catálogo/servicio, advertencia `stock_warning` sin bloquear, recálculo transaccional de `additional_cost` y `logAudit`.
+  - `PATCH /api/workorders/:id/items/:itemId/decision` (`admin`, `cajero`): aprueba o rechaza líneas en `'propuesta'` con canal obligatorio, recalculando `additional_cost` y auditando.
+  - `POST /api/workorders/:id/items/notify-link` (`admin`, `cajero`): valida `whatsapp_opt_in` y celular PE, arma mensaje `wa.me` con líneas propuestas y total con IGV sin envío automático.
+  - `getAll`, `getById` y `getHistoryByPlaca` agregan `items`, `items_count`, `approved_total` y `pending_total` sin alterar campos existentes.
+  - `updateStatus` evalúa el umbral en `diagnostico → en_reparacion` con el total derivado (aprobando automáticamente con canal `'umbral'` si no supera), bloquea con `422 PENDING_ITEMS` el paso `en_reparacion → terminado` si hay líneas `propuesta`, y responde `422 ADDITIONAL_COST_DERIVED_FROM_ITEMS` si llega un `additional_cost` distinto del derivado (tolerancia `0.01`) en OT con líneas; `approveAdditionalWork` y `rejectAdditionalWork` deciden en lote las líneas `propuesta`.
+- `src/modules/sales/sales.service.js` y `sales.controller.js`:
+  - Soporte de `work_order_item_id` en `createSale`: toma tipo, producto/kit/descripción, cantidad y precio unitario congelado desde `work_order_items` (ignora cambios posteriores en catálogo y valores enviados del carrito), exige incluir todas las líneas aprobadas sin repetidos ni no aprobadas (`422`), y devuelve `422` legible si un repuesto aprobado quedó inactivo o sin stock.
+- `scripts/seed-demo-company.js`: limpia `work_order_items` en `resetCompanyData` antes de borrar `work_orders`.
+- Suite `scripts/tests/verify-ot-items.js` agregada en `package.json` (`test:ot-items`) y `scripts/tests/run-all-tests.js`.
+
 ### Added (Cobro Unificado de OT - Alcance A)
 - Migración idempotente `scripts/migrations/017_sale_items_servicios.sql`:
   - `sale_items`: nuevas columnas `item_type` (`'product'|'kit'|'service'`, backfill automático) y `description` (`TEXT NULL`), junto al constraint `chk_sale_item_type_consistency` en reemplazo de `chk_sale_item_product_xor_kit`.
